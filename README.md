@@ -1,6 +1,6 @@
 # cifar10-fast
 
-Demonstration of training CIFAR10 to 94% test accuracy in 87s.
+Demonstration of training a small ResNet on CIFAR10 to 94% test accuracy in 87 seconds.
 
 Instructions to reproduce on an `AWS p3.2xlarge` instance:
 - setup an instance with AMI: `Deep Learning AMI (Ubuntu) Version 11.0` (`ami-c47c28bc` in `Amazon AMIs`)
@@ -10,5 +10,7 @@ Instructions to reproduce on an `AWS p3.2xlarge` instance:
     - `source activate pytorch_p36`
     - `jupyter notebook --no-browser --port=8901`
  - open the jupyter notebook url in a browser, open `demo.ipynb` and run all the cells
+
+ In my tests, 15 out of 20 runs reached 94% test set accuracy with a median of 94.06%. Runtime for 25 epochs is roughly 87s.
 
 
