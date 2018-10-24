@@ -266,7 +266,6 @@ class ColorMap(dict):
         return self[key]
 
 def make_pydot(nodes, edges, direction='LR', sep=sep, **kwargs):
-    import pydot
     parent = lambda path: path[:-1]
     stub = lambda path: path[-1]
     class Subgraphs(dict):
@@ -288,26 +287,32 @@ def make_pydot(nodes, edges, direction='LR', sep=sep, **kwargs):
 
 get_params = lambda mod: {p.name: getattr(mod, p.name, '?') for p in signature(type(mod)).parameters.values()}
 
-class DotGraph():
-    colors = ColorMap()
-    def __init__(self, net, size=15, direction='LR'):
-        graph = build_graph(net)
-        self.nodes = [(k, {
-            'tooltip': '%s %.1000r' % (type(n).__name__, get_params(n)), 
-            'fillcolor': '#'+self.colors[type(n)],
-        }) for k, (n, i) in graph.items()] 
-        self.edges = [(src, k, {}) for (k, (n, i)) in graph.items() for src in i]
-        self.size, self.direction = size, direction
+try:
+    import pydot
+    class DotGraph():
+        colors = ColorMap()
+        def __init__(self, net, size=15, direction='LR'):
+            graph = build_graph(net)
+            self.nodes = [(k, {
+                'tooltip': '%s %.1000r' % (type(n).__name__, get_params(n)), 
+                'fillcolor': '#'+self.colors[type(n)],
+            }) for k, (n, i) in graph.items()] 
+            self.edges = [(src, k, {}) for (k, (n, i)) in graph.items() for src in i]
+            self.size, self.direction = size, direction
 
-    def dot_graph(self, **kwargs):
-        return make_pydot(self.nodes, self.edges, size=self.size, 
-                            direction=self.direction, **kwargs)
+        def dot_graph(self, **kwargs):
+            return make_pydot(self.nodes, self.edges, size=self.size, 
+                                direction=self.direction, **kwargs)
 
-    def svg(self, **kwargs):
-        return self.dot_graph(**kwargs).create(format='svg').decode('utf-8')
+        def svg(self, **kwargs):
+            return self.dot_graph(**kwargs).create(format='svg').decode('utf-8')
 
-    def _repr_svg_(self):
-        return self.svg()
+        def _repr_svg_(self):
+            return self.svg()
+except ImportError:
+    class DotGraph():
+        def __repr__(self):
+            return 'pydot is needed for network visualisation'
 
 walk = lambda dict_, key: walk(dict_, dict_[key]) if key in dict_ else key
    
