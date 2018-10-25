@@ -239,26 +239,17 @@ class PiecewiseLinear(namedtuple('PiecewiseLinear', ('knots', 'vals'))):
 
 trainable_params = lambda model:filter(lambda p: p.requires_grad, model.parameters())
 
-def nesterov(params, momentum=None, weight_decay=None, lr_scale_factor=1.0):
-    opt =  torch.optim.SGD(
-        params, 
-        lr=0.0,
-        momentum=momentum,
-        weight_decay=weight_decay,
-        nesterov=True
-    )
-    opt.lr_scale_factor = lr_scale_factor
-    return opt
+def nesterov(params, momentum, weight_decay=None):
+    return torch.optim.SGD(params, lr=0.0, momentum=momentum, weight_decay=weight_decay, nesterov=True)
 
 concat = lambda xs: np.array(xs) if xs[0].shape is () else np.concatenate(xs)
 
 #####################
 ## network visualisation (requires pydot)
 #####################
-
 class ColorMap(dict):
     palette = (
-        '8dd3c7,ffffb3,bebada,fb8072,80b1d3,fdb462,b3de69,fccde5,bc80bd,ccebc5,ffed6f,1f78b4,33a02c,e31a1c,ff7f00,'
+        'bebada,ffffb3,fb8072,8dd3c7,80b1d3,fdb462,b3de69,fccde5,bc80bd,ccebc5,ffed6f,1f78b4,33a02c,e31a1c,ff7f00,'
         '4dddf8,e66493,b07b87,4e90e3,dea05e,d0c281,f0e189,e9e8b1,e0eb71,bbd2a4,6ed641,57eb9c,3ca4d4,92d5e7,b15928'
     ).split(',')
     def __missing__(self, key):
