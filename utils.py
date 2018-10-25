@@ -83,7 +83,7 @@ class Crop(namedtuple('Crop', ('h', 'w'))):
     
 class FlipLR(namedtuple('FlipLR', ())):
     def __call__(self, x, choice):
-        return x[:, :, ::-1] if choice else x 
+        return x[:, :, ::-1].copy() if choice else x 
         
     def options(self, x_shape):
         return {'choice': [True, False]}
@@ -168,7 +168,7 @@ class Correct(nn.Module):
     def forward(self, classifier, target):
         return classifier.max(dim = 1)[1] == target
 
-def batch_norm(num_channels, bn_bias_init=None, bn_bias_freeze=False, bn_weight_init=1.0, bn_weight_freeze=False):
+def batch_norm(num_channels, bn_bias_init=None, bn_bias_freeze=False, bn_weight_init=None, bn_weight_freeze=False):
     m = nn.BatchNorm2d(num_channels)
     if bn_bias_init is not None:
         m.bias.data.fill_(bn_bias_init)
