@@ -5,7 +5,7 @@ Demonstration of training a small ResNet on CIFAR10 to 94% test accuracy in 82 s
 <img src="net.svg">
 
 Instructions to reproduce on an `AWS p3.2xlarge` instance:
-- setup an instance with AMI: `Deep Learning AMI (Ubuntu) Version 16.0` (`ami-0231c1de0d92fe7a2` in `Amazon AMIs`)
+- setup an instance with AMI: `Deep Learning AMI (Ubuntu) Version 11.0` (`ami-c47c28bc` in `Amazon AMIs`)
 - ssh into the instance: `ssh -i $KEY_PAIR ubuntu@$PUBLIC_IP_ADDRESS -L 8901:localhost:8901`
 - on the remote machine
     - `source activate pytorch_p36`
