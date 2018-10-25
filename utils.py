@@ -83,14 +83,14 @@ class Crop(namedtuple('Crop', ('h', 'w'))):
     
 class FlipLR(namedtuple('FlipLR', ())):
     def __call__(self, x, choice):
-        x = x[:, :, ::-1] if choice else x 
-        return x.copy()
-
+        return x[:, :, ::-1] if choice else x 
+        
     def options(self, x_shape):
         return {'choice': [True, False]}
 
 class Cutout(namedtuple('Cutout', ('h', 'w'))):
     def __call__(self, x, x0, y0):
+        x = x.copy()
         x[:,y0:y0+self.h,x0:x0+self.w].fill(0.0)
         return x
 
