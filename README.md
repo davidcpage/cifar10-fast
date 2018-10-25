@@ -1,6 +1,6 @@
 # cifar10-fast
 
-Demonstration of training a small ResNet on CIFAR10 to 94% test accuracy in 80 seconds as described [in this blog series](https://www.myrtle.ai/2018/09/24/how_to_train_your_resnet/).
+Demonstration of training a small ResNet on CIFAR10 to 94% test accuracy in 81 seconds as described [in this blog series](https://www.myrtle.ai/2018/09/24/how_to_train_your_resnet/).
 
 <img src="net.svg">
 
@@ -14,6 +14,6 @@ Instructions to reproduce on an `AWS p3.2xlarge` instance:
     - `jupyter notebook --no-browser --port=8901`
  - open the jupyter notebook url in a browser, open `demo.ipynb` and run all the cells
 
- In my tests, 15 out of 20 runs reached 94% test set accuracy with a median of 94.06%. Runtime for 24 epochs is roughly 80s.
+ In my test, 35 out of 50 runs reached 94% test set accuracy with a median of 94.08%. Runtime for 24 epochs is roughly 81s.
 
 
