@@ -17,12 +17,15 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 class Timer():
     def __init__(self):
         self.times = [time.time()]
-    def __call__(self):
-        self.times.append(time.time())
-        return self.times[-1] - self.times[-2]
-    def total_time(self):
-        return self.times[-1] - self.times[0]
+        self.total_time = 0.0
 
+    def __call__(self, include_in_total=True):
+        self.times.append(time.time())
+        dt = self.times[-1] - self.times[-2]
+        if include_in_total:
+            self.total_time += dt
+        return dt
+    
 localtime = lambda: time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
 
 def warmup_cudnn(model, batch_size):
@@ -128,10 +131,10 @@ class Transform():
 #####################
 
 class Batches():
-    def __init__(self, dataset, batch_size, shuffle, num_workers=0):
+    def __init__(self, dataset, batch_size, shuffle, num_workers=0, drop_last=False):
         self.dataset = dataset
         self.dataloader = torch.utils.data.DataLoader(
-            dataset, batch_size=batch_size, num_workers=num_workers, pin_memory=True, shuffle=shuffle
+            dataset, batch_size=batch_size, num_workers=num_workers, pin_memory=True, shuffle=shuffle, drop_last=drop_last
         )
     
     def __iter__(self):  
@@ -257,6 +260,7 @@ class ColorMap(dict):
         return self[key]
 
 def make_pydot(nodes, edges, direction='LR', sep=sep, **kwargs):
+    import pydot
     parent = lambda path: path[:-1]
     stub = lambda path: path[-1]
     class Subgraphs(dict):
@@ -278,30 +282,30 @@ def make_pydot(nodes, edges, direction='LR', sep=sep, **kwargs):
 
 get_params = lambda mod: {p.name: getattr(mod, p.name, '?') for p in signature(type(mod)).parameters.values()}
 
-try:
-    import pydot
-    class DotGraph():
-        colors = ColorMap()
-        def __init__(self, net, size=15, direction='LR'):
-            graph = build_graph(net)
-            self.nodes = [(k, {
-                'tooltip': '%s %.1000r' % (type(n).__name__, get_params(n)), 
-                'fillcolor': '#'+self.colors[type(n)],
-            }) for k, (n, i) in graph.items()] 
-            self.edges = [(src, k, {}) for (k, (n, i)) in graph.items() for src in i]
-            self.size, self.direction = size, direction
 
-        def dot_graph(self, **kwargs):
-            return make_pydot(self.nodes, self.edges, size=self.size, 
-                                direction=self.direction, **kwargs)
+class DotGraph():
+    colors = ColorMap()
+    def __init__(self, net, size=15, direction='LR'):
+        graph = build_graph(net)
+        self.nodes = [(k, {
+            'tooltip': '%s %.1000r' % (type(n).__name__, get_params(n)), 
+            'fillcolor': '#'+self.colors[type(n)],
+        }) for k, (n, i) in graph.items()] 
+        self.edges = [(src, k, {}) for (k, (n, i)) in graph.items() for src in i]
+        self.size, self.direction = size, direction
 
-        def svg(self, **kwargs):
-            return self.dot_graph(**kwargs).create(format='svg').decode('utf-8')
+    def dot_graph(self, **kwargs):
+        return make_pydot(self.nodes, self.edges, size=self.size, 
+                            direction=self.direction, **kwargs)
 
+    def svg(self, **kwargs):
+        return self.dot_graph(**kwargs).create(format='svg').decode('utf-8')
+
+    try:
+        import pydot
         def _repr_svg_(self):
             return self.svg()
-except ImportError:
-    class DotGraph():
+    except ImportError:
         def __repr__(self):
             return 'pydot is needed for network visualisation'
 
@@ -311,4 +315,4 @@ def remove_identity_nodes(net):
     #remove identity nodes for more compact visualisations
     graph = build_graph(net)
     remap = {k: i[0] for k,(v,i) in graph.items() if isinstance(v, Identity)}
-    return {k: (v, [walk(remap, x) for x in i]) for k, (v,i) in graph.items() if not isinstance(v, Identity)}   
+    return {k: (v, [walk(remap, x) for x in i]) for k, (v,i) in graph.items() if not isinstance(v, Identity)}
