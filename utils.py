@@ -247,6 +247,65 @@ def nesterov(params, momentum, weight_decay=None):
 
 concat = lambda xs: np.array(xs) if xs[0].shape is () else np.concatenate(xs)
 
+def set_opt_params(optimizer, params):
+    for k, v in params.items():
+        optimizer.param_groups[0][k] = v
+    return optimizer
+
+def update(model, optimizer):
+    assert model.training
+    model.cache['loss'].backward()
+    optimizer.step()
+    model.zero_grad()
+    
+def collect(stats, output):
+    for k,v in stats.items():
+        v.append(to_numpy(output[k]))
+
+def train_epoch(model, batches, optimizer, lrs, stats):
+    model.train(True)   
+    for lr, batch in zip(lrs, batches):
+        collect(stats, model(batch))
+        update(model, set_opt_params(optimizer, {'lr': lr}))
+    return stats
+
+def test_epoch(model, batches, stats):
+    model.train(False)
+    for batch in batches:
+        collect(stats, model(batch))
+    return stats
+
+sum_ = lambda xs: np.sum(concat(xs), dtype=np.float)
+
+def train(model, lr_schedule, optimizer, train_set, test_set, batch_size=512, 
+          loggers=(), test_time_in_total=True, num_workers=0, drop_last=False, timer=None):  
+    t = timer or Timer()
+    train_batches = Batches(train_set, batch_size, shuffle=True, num_workers=num_workers, drop_last=drop_last)
+    test_batches = Batches(test_set, batch_size, shuffle=False, num_workers=num_workers)
+    N_train, N_test = len(train_set), len(test_set)
+    if drop_last: N_train -= (N_train % batch_size)
+
+    for epoch in range(lr_schedule.knots[-1]):
+        train_batches.dataset.set_random_choices() 
+        lrs = (lr_schedule(x)/batch_size for x in np.arange(epoch, epoch+1, 1/len(train_batches)))
+        train_stats, train_time = train_epoch(model, train_batches, optimizer, lrs, {'loss': [], 'correct': []}), t()
+        test_stats, test_time = test_epoch(model, test_batches, {'loss': [], 'correct': []}), t(test_time_in_total)
+        summary = {
+           'epoch': epoch+1, 
+           'lr': lr_schedule(epoch+1), 
+           'train time': train_time, 
+           'train loss': sum_(train_stats['loss'])/N_train, 
+           'train acc': sum_(train_stats['correct'])/N_train, 
+           'test time': test_time, 
+           'test loss': sum_(test_stats['loss'])/N_test, 
+           'test acc': sum_(test_stats['correct'])/N_test,
+           'total time': t.total_time, 
+        }
+        for logger in loggers:
+            logger.append(summary)    
+    return summary
+
+
 #####################
 ## network visualisation (requires pydot)
 #####################
