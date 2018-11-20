@@ -1,14 +1,19 @@
+import os
+import os.path
+import pickle
+import hashlib
+import urllib.request
+import tarfile
+from tqdm import tqdm
 from inspect import signature
 from collections import namedtuple
 import time
-import torch
-from torch import nn
 import numpy as np
-import torchvision
 import pandas as pd
 
-torch.backends.cudnn.benchmark = True
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+from dataclasses import dataclass
+from typing import Any
+from functools import singledispatch
 
 #####################
 # utils
@@ -21,25 +26,13 @@ class Timer():
 
     def __call__(self, include_in_total=True):
         self.times.append(time.time())
-        dt = self.times[-1] - self.times[-2]
+        delta_t = self.times[-1] - self.times[-2]
         if include_in_total:
-            self.total_time += dt
-        return dt
-    
+            self.total_time += delta_t
+        return delta_t
+
 localtime = lambda: time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
 
-def warmup_cudnn(model, batch_size):
-    #run forward and backward pass of the model on a batch of random inputs
-    #to allow benchmarking of cudnn kernels 
-    batch = {
-        'input': torch.Tensor(np.random.rand(batch_size,3,32,32)).cuda().half(), 
-        'target': torch.LongTensor(np.random.randint(0,10,batch_size)).cuda()
-    }
-    model.train(True)
-    o = model(batch)
-    o['loss'].backward()
-    model.zero_grad()
-    torch.cuda.synchronize()
 
 class TableLogger():
     def append(self, output):
@@ -48,6 +41,67 @@ class TableLogger():
             print(*(f'{k:>12s}' for k in self.keys))
         filtered = [output[k] for k in self.keys]
         print(*(f'{v:12.4f}' if isinstance(v, np.float) else f'{v:12}' for v in filtered))
+
+
+#####################
+## dataset download (no torchvision import)
+#####################
+def compute_md5(fpath):
+    md5 = hashlib.md5()
+    with open(fpath, 'rb') as f:
+        for chunk in iter(lambda: f.read(1024*1024), b''):
+            md5.update(chunk)
+    return md5.hexdigest()
+
+def download_and_extract(url, root, filename, md5):
+    fpath = os.path.join(root, filename)
+    if os.path.isfile(fpath) and (md5 == compute_md5(fpath)):
+        print(f'Using already downloaded file: {fpath}')
+    else:
+        print(f'Downloading {url} to {fpath}')
+        pbar = tqdm(unit='B', unit_scale=True)
+        def bar_updater(count, block_size, total_size):
+            if pbar.total is None and total_size: 
+                pbar.total = total_size 
+            pbar.update(count * block_size - pbar.n)
+        urllib.request.urlretrieve(
+            url, fpath,
+            reporthook=bar_updater
+        )
+    with tarfile.open(fpath, "r:gz") as tar:
+        tar.extractall(path=root)
+        
+def unpickle(fpath, md5=None):
+    assert (os.path.isfile(fpath) and (md5 == compute_md5(fpath)))
+    with open(fpath, 'rb') as f:
+        return pickle.load(f, encoding='latin1')
+    
+def get_cifar10(root='./data'):
+    url = 'https://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz'
+    tar_filename = ('cifar-10-python.tar.gz', 'c58f30108f718f92721af3b95e74349a')
+    data_path = 'cifar-10-batches-py'
+    data_filenames = {
+        'train': [
+            ('data_batch_1', 'c99cafc152244af753f735de768cd75f'),
+            ('data_batch_2', 'd4bba439e000b95fd0a9bffe97cbabec'),
+            ('data_batch_3', '54ebc095f3ab1f0389bbae665268c751'),
+            ('data_batch_4', '634d18415352ddfa80567beed471001a'),
+            ('data_batch_5', '482c414d41f54cd18b22e5b47cb7c3cb'),
+        ],
+        'test': [
+            ('test_batch',   '40351d587109b95175f43aff81a1287e'),
+        ]
+    }
+    os.makedirs(root, exist_ok=True)
+    download_and_extract(url, root, *tar_filename)
+    raw_data = {group: {filename: unpickle(os.path.join(root, data_path, filename), md5) 
+                for (filename, md5) in filenames} 
+                for (group, filenames) in data_filenames.items()}
+    data = {group: np.vstack([d['data'] for d in batches.values()]).reshape(-1, 3, 32, 32).transpose((0, 2, 3, 1)) 
+                for group,batches in raw_data.items()} 
+    targets = {group: sum((d['labels'] for d in batches.values()),[]) 
+                for group, batches in raw_data.items()}
+    return data, targets
 
 #####################
 ## data preprocessing
@@ -126,66 +180,121 @@ class Transform():
             x_shape = t.output_shape(x_shape) if hasattr(t, 'output_shape') else x_shape
             self.choices.append({k:np.random.choice(v, size=N) for (k,v) in options.items()})
 
-#####################
-## data loading
-#####################
-
-class Batches():
-    def __init__(self, dataset, batch_size, shuffle, num_workers=0, drop_last=False):
-        self.dataset = dataset
-        self.dataloader = torch.utils.data.DataLoader(
-            dataset, batch_size=batch_size, num_workers=num_workers, pin_memory=True, shuffle=shuffle, drop_last=drop_last
-        )
-    
-    def __iter__(self):  
-        return ({'input': x.to(device).half(), 'target': y.to(device).long()} for (x,y) in self.dataloader)
-    
-    def __len__(self): 
-        return len(self.dataloader)
-
 
 #####################
-## torch stuff
+## backend compat
 #####################
+@singledispatch
+def to_numpy(x):
+    raise NotImplementedError
 
-class Identity(nn.Module):
-    def forward(self, x): return x
-    
-class Mul(nn.Module):
-    def __init__(self, weight):
-        super().__init__()
-        self.weight = weight
-    def __call__(self, x): 
-        return x*self.weight
-    
-class Flatten(nn.Module):
-    def forward(self, x): return x.view(x.size(0), x.size(1))
+#####################
+## layer types
+#####################
+_pair = lambda x: (x,x) if isinstance(x, int) else tuple(x)
 
-class Add(nn.Module):
-    def forward(self, x, y): return x + y 
-    
-class Concat(nn.Module):
-    def forward(self, *xs): return torch.cat(xs, 1)
-    
-class Correct(nn.Module):
-    def forward(self, classifier, target):
+@dataclass
+class Conv2d():
+    in_channels: str
+    out_channels: int
+    kernel_size: Any
+    stride: Any = 1
+    padding: Any = 0
+    dilation: Any = 1
+    groups: int = 1
+    bias: bool = True
+
+    def __post_init__(self):
+        self.kernel_size = _pair(self.kernel_size)
+        self.stride = _pair(self.stride)
+        self.padding = _pair(self.padding)
+        self.dilation = _pair(self.dilation)
+        
+@dataclass
+class BatchNorm2d():
+    num_features: int
+    eps: float = 1e-05
+    momentum: float = 0.1
+    affine: bool = True
+
+@dataclass
+class MaxPool2d():
+    kernel_size: Any
+    stride: Any = None
+    padding: Any = 0
+
+    def __post_init__(self):
+        self.kernel_size = _pair(self.kernel_size)
+        self.stride = self.kernel_size if (self.stride is None) else _pair(self.stride)
+
+@dataclass
+class Linear():
+    in_features: int
+    out_features: int
+    bias: bool = True
+
+@dataclass
+class CrossEntropyLoss():
+    weight: Any = None
+    reduction: str ='elementwise_mean'
+
+@dataclass
+class Identity():
+    def __call__(self, x): return x
+
+@dataclass
+class ReLU():
+    inplace: bool = True
+
+@dataclass
+class Mul():
+    weight: float
+    def __call__(self, x): return x*self.weight
+
+@dataclass        
+class Flatten():
+    def __call__(self, x): return x.view(x.size(0), x.size(1))
+
+@dataclass
+class Add():
+    def __call__(self, x, y): return x + y
+
+@dataclass
+class Concat():
+    dim: int = 1
+
+@dataclass
+class Correct():
+    def __call__(self, classifier, target):
         return classifier.max(dim = 1)[1] == target
 
-def batch_norm(num_channels, bn_bias_init=None, bn_bias_freeze=False, bn_weight_init=None, bn_weight_freeze=False):
-    m = nn.BatchNorm2d(num_channels)
-    if bn_bias_init is not None:
-        m.bias.data.fill_(bn_bias_init)
-    if bn_bias_freeze:
-        m.bias.requires_grad = False
-    if bn_weight_init is not None:
-        m.weight.data.fill_(bn_weight_init)
-    if bn_weight_freeze:
-        m.weight.requires_grad = False
-        
-    return m
+#####################
+## weights init
+#####################
 
-def to_numpy(x):
-    return x.detach().cpu().numpy()  
+def conv_init(layer):
+    c_in, c_out, kh, kw = layer.in_channels, layer.out_channels, *layer.kernel_size
+    u = 1. / np.sqrt(c_in*kh*kw)
+    res = {'weight': np.random.uniform(-u, u, size=(c_out, c_in, kh, kw))}
+    if layer.bias:
+        res['bias'] = np.full(c_out, 0.0)
+    return res
+
+def bn_init(layer):
+    n = layer.num_features
+    return {'weight': np.full(n, 1.), 'bias': np.full(n, 0.), 'running_mean': np.full(n, 0.), 'running_var': np.full(n, 1.)}   
+
+def linear_init(layer):
+    u = 1. / np.sqrt(layer.in_features)
+    res = {'weight': np.random.uniform(-u, u, size=(layer.out_features, layer.in_features))}
+    if layer.bias:
+        res['bias'] = np.random.uniform(-u, u, size=layer.in_features)
+    return res
+
+def initial_weights(net, init_funcs=((Conv2d, conv_init), (BatchNorm2d, bn_init), (Linear, linear_init))):
+    init_funcs = dict(init_funcs)
+    return {k+'.'+p: v.astype(np.float32) for k, (layer, _) in build_graph(net).items() if 
+            type(layer) in init_funcs for p,v in init_funcs[type(layer)](layer).items()}
 
 #####################
 ## dict utils
@@ -198,6 +307,7 @@ def path_iter(nested_dict, pfx=()):
         if isinstance(val, dict): yield from path_iter(val, (*pfx, name))
         else: yield ((*pfx, name), val)  
 
+
 #####################
 ## graph building
 #####################
@@ -209,28 +319,12 @@ rel_path = lambda *parts: RelativePath(parts)
 def build_graph(net):
     net = dict(path_iter(net)) 
     default_inputs = [[('input',)]]+[[k] for k in net.keys()]
-    with_default_inputs = lambda vals: (val if isinstance(val, tuple) else (val, default_inputs[idx]) for idx,val in enumerate(vals))
-    parts = lambda path, pfx: tuple(pfx) + path.parts if isinstance(path, RelativePath) else (path,) if isinstance(path, str) else path
-    return {sep.join((*pfx, name)): (val, [sep.join(parts(x, pfx)) for x in inputs]) for (*pfx, name), (val, inputs) in zip(net.keys(), with_default_inputs(net.values()))}
-    
-class TorchGraph(nn.Module):
-    def __init__(self, net):
-        self.graph = build_graph(net)
-        super().__init__()
-        for n, (v, _) in self.graph.items(): 
-            setattr(self, n, v)
-
-    def forward(self, inputs):
-        self.cache = dict(inputs)
-        for n, (_, i) in self.graph.items():
-            self.cache[n] = getattr(self, n)(*[self.cache[x] for x in i])
-        return self.cache
-    
-    def half(self):
-        for module in self.children():
-            if type(module) is not nn.BatchNorm2d:
-                module.half()    
-        return self
+    with_default_inputs = lambda vals: (val if isinstance(val, tuple) else (val, default_inputs[idx]) for 
+                                        idx,val in enumerate(vals))
+    parts = lambda path, pfx: (tuple(pfx) + path.parts if isinstance(path, RelativePath) else (path,) if 
+                                isinstance(path, str) else path)
+    return {sep.join((*pfx, name)): (val, [sep.join(parts(x, pfx)) for x in inputs]) for 
+            (*pfx, name), (val, inputs) in zip(net.keys(), with_default_inputs(net.values()))}
 
 #####################
 ## training utils
@@ -240,70 +334,90 @@ class PiecewiseLinear(namedtuple('PiecewiseLinear', ('knots', 'vals'))):
     def __call__(self, t):
         return np.interp([t], self.knots, self.vals)[0]
 
-trainable_params = lambda model:filter(lambda p: p.requires_grad, model.parameters())
-
-def nesterov(params, momentum, weight_decay=None):
-    return torch.optim.SGD(params, lr=0.0, momentum=momentum, weight_decay=weight_decay, nesterov=True)
-
 concat = lambda xs: np.array(xs) if xs[0].shape is () else np.concatenate(xs)
 
-def set_opt_params(optimizer, params):
-    for k, v in params.items():
-        optimizer.param_groups[0][k] = v
-    return optimizer
-
-def update(model, optimizer):
-    assert model.training
-    model.cache['loss'].backward()
-    optimizer.step()
-    model.zero_grad()
-    
 def collect(stats, output):
     for k,v in stats.items():
         v.append(to_numpy(output[k]))
 
-def train_epoch(model, batches, optimizer, lrs, stats):
-    model.train(True)   
-    for lr, batch in zip(lrs, batches):
-        collect(stats, model(batch))
-        update(model, set_opt_params(optimizer, {'lr': lr}))
-    return stats
+@singledispatch
+def forward(model, batch, recording=False):
+    return model(batch)
 
-def test_epoch(model, batches, stats):
-    model.train(False)
+@singledispatch
+def grad_data(param):
+    return p.grad.data
+
+@singledispatch
+def weight_data(param):
+    return p.data
+
+
+class StatsLogger():
+    def __init__(self, keys):
+        self.stats = {k:[] for k in keys}
+        self.N = 0
+
+    def append(self, output):
+        for k,v in self.stats.items():
+            v.append(to_numpy(output[k]))
+        self.N += len(output['target'])
+    
+    def mean(self, key):
+        return np.sum(concat(self.stats[key]), dtype=np.float)/self.N
+
+def run_batches(model, batches, training, optimizer_step=None, stats=None):
+    stats = stats or StatsLogger(('loss', 'correct'))
+    model.train(training)   
     for batch in batches:
-        collect(stats, model(batch))
+        output = forward(model, batch, recording=training)
+        stats.append(output) #transfers data to the CPU. don't move from here without benchmarking as it may change overlap of data transfer and computation 
+        if training:
+            output['loss'].backward()
+            optimizer_step()
+            model.zero_grad() 
     return stats
 
-sum_ = lambda xs: np.sum(concat(xs), dtype=np.float)
+@singledispatch
+def add_(x, a, y):
+    #x += a*y
+    raise NotImplementedError
 
-def train(model, lr_schedule, optimizer, train_set, test_set, batch_size=512, 
-          loggers=(), test_time_in_total=True, num_workers=0, drop_last=False, timer=None):  
-    t = timer or Timer()
-    train_batches = Batches(train_set, batch_size, shuffle=True, num_workers=num_workers, drop_last=drop_last)
-    test_batches = Batches(test_set, batch_size, shuffle=False, num_workers=num_workers)
-    N_train, N_test = len(train_set), len(test_set)
-    if drop_last: N_train -= (N_train % batch_size)
+@singledispatch
+def mul_(x, y):
+    #x *= y
+    raise NotImplementedError
 
-    for epoch in range(lr_schedule.knots[-1]):
-        train_batches.dataset.set_random_choices() 
-        lrs = (lr_schedule(x)/batch_size for x in np.arange(epoch, epoch+1, 1/len(train_batches)))
-        train_stats, train_time = train_epoch(model, train_batches, optimizer, lrs, {'loss': [], 'correct': []}), t()
-        test_stats, test_time = test_epoch(model, test_batches, {'loss': [], 'correct': []}), t(test_time_in_total)
-        summary = {
-           'epoch': epoch+1, 
-           'lr': lr_schedule(epoch+1), 
-           'train time': train_time, 
-           'train loss': sum_(train_stats['loss'])/N_train, 
-           'train acc': sum_(train_stats['correct'])/N_train, 
-           'test time': test_time, 
-           'test loss': sum_(test_stats['loss'])/N_test, 
-           'test acc': sum_(test_stats['correct'])/N_test,
-           'total time': t.total_time, 
-        }
-        for logger in loggers:
-            logger.append(summary)    
-    return summary
+@singledispatch
+def zeros_like(x):
+    raise NotImplementedError
+
+class Nesterov():
+    def __init__(self, weights, params, state=None):
+        self.weights = weights
+        self.params = iter(params) 
+        self.state = [zeros_like(weight_data(w)) for w in weights] if state is None else state
+        
+    def step(self):
+        lr, weight_decay, momentum = next(self.params)
+        for w, g, v in zip((weight_data(w) for w in self.weights), (grad_data(w) for w in self.weights), self.state):
+            add_(g, weight_decay, w) 
+            mul_(v, momentum)
+            add_(v, 1, g)
+            add_(g, momentum, v)
+            add_(w, -lr, g)
+
+#def set_params(opt, params):
+#    return type(opt)(opt.weights, opt.state, params)
+    
+def train_epoch(model, train_batches, test_batches, optimizer_step, timer, test_time_in_total=True):
+    train_stats, train_time = run_batches(model, train_batches, True, optimizer_step), timer()
+    test_stats, test_time = run_batches(model, test_batches, False), timer(test_time_in_total)
+    return { 
+        'train time': train_time, 'train loss': train_stats.mean('loss'), 'train acc': train_stats.mean('correct'), 
+        'test time': test_time, 'test loss': test_stats.mean('loss'), 'test acc': test_stats.mean('correct'),
+        'total time': timer.total_time, 
+    }
 
 
 #####################
@@ -375,3 +489,4 @@ def remove_identity_nodes(net):
     graph = build_graph(net)
     remap = {k: i[0] for k,(v,i) in graph.items() if isinstance(v, Identity)}
     return {k: (v, [walk(remap, x) for x in i]) for k, (v,i) in graph.items() if not isinstance(v, Identity)}
+
