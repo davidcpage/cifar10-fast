@@ -11,12 +11,8 @@ device = mxnet.context.gpu()
 ## data loading
 #####################
 
-from functools import singledispatch
-@singledispatch
-def transfer(data, device):
-    pass
 
-@transfer.register(mxnet.nd.NDArray)
+@utils.transfer.register(mxnet.nd.NDArray)
 def _(data, device):
     return data.as_in_context(device)
 

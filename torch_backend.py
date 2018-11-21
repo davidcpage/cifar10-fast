@@ -28,8 +28,19 @@ def _(x, y):
 def _(x):
     return torch.zeros_like(x)
 
+@utils.transfer.register(torch.Tensor)
+def _(data, device):
+    return data.to(device)
+
 def from_numpy(x):
-    return torch.Tensor(x)
+    type_map = {
+        np.float16: torch.HalfTensor,
+        np.float32: torch.Tensor,
+        np.int32: torch.LongTensor,
+        np.int: torch.LongTensor,
+        int: torch.LongTensor
+    }
+    return type_map[x.dtype.type](x)
 
 #####################
 ## data loading
@@ -93,9 +104,9 @@ class Network(nn.Module):
                 module.half()    
         return self
 
-    def load_weights(self, weights):
+    def load_weights(self, weights, device=device):
         self.load_state_dict({k: from_numpy(v) for k,v in weights.items()})
-        return self
+        return self.to(device)
     
     def trainable_params(self):
         return list(filter(lambda p: p.requires_grad, self.parameters()))

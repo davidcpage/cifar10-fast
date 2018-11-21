@@ -188,6 +188,10 @@ class Transform():
 def to_numpy(x):
     raise NotImplementedError
 
+@singledispatch
+def transfer(data, device):
+    raise NotImplementedError
+
 #####################
 ## layer types
 #####################
@@ -346,11 +350,11 @@ def forward(model, batch, recording=False):
 
 @singledispatch
 def grad_data(param):
-    return p.grad.data
+    return param.grad.data
 
 @singledispatch
 def weight_data(param):
-    return p.data
+    return param.data
 
 
 class StatsLogger():
