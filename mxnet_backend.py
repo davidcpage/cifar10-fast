@@ -26,7 +26,7 @@ class Batches():
     
     def __iter__(self):
         if self.set_random_choices: self.dataloader._dataset.set_random_choices()
-        return ({'input': transfer(x, device).astype(np.float16), 'target': transfer(y, device).astype(np.int32)} for (x,y) in self.dataloader)
+        return ({'input': utils.transfer(x, device).astype(np.float16), 'target': utils.transfer(y, device).astype(np.int32)} for (x,y) in self.dataloader)
     
     def __len__(self): 
         return len(self.dataloader)
@@ -71,7 +71,7 @@ def convert_to_mxnet(layer):
         return type_map[type(layer)](**asdict(layer))
     return layer
 
-class Network(gluon.Block):  
+class Network(gluon.HybridBlock):  
     def __init__(self, net):
         super().__init__()
         self.graph = utils.build_graph(net)
@@ -79,11 +79,21 @@ class Network(gluon.Block):
         for n, (v, _) in self.graph.items(): 
             setattr(self, n, convert_to_mxnet(v))
 
-    def forward(self, inputs):
-        self.cache=dict(inputs)
+    def hybrid_forward(self, F, x):
+        cache = {'input': x}
         for n, (_, i) in self.graph.items():
-            self.cache[n] = getattr(self, n)(*[self.cache[x] for x in i])
-        return self.cache
+            cache[n] = getattr(self, n)(*[cache[x] for x in i])
+            if n == 'classifier': break
+        return cache['classifier']
+    
+    def __call__(self, inputs):
+        output_nodes = ['loss', 'correct']
+        cache = inputs
+        cache['classifier'] = self.forward(cache['input'])
+        for node in output_nodes:
+            (_, i) = self.graph[node]
+            cache[node] = getattr(self, node)(*[cache[x] for x in i])
+        return cache       
     
     def train(self, mode):
         mxnet.autograd.set_training(mode)
