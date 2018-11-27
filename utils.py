@@ -220,6 +220,9 @@ class BatchNorm2d():
     eps: float = 1e-05
     momentum: float = 0.1
     affine: bool = True
+    #chunk_size: any = None
+    num_chunks: int = 1
+
 
 @dataclass
 class MaxPool2d():

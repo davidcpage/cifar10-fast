@@ -64,16 +64,31 @@ class Batches():
 class Concat(utils.Concat):
     def __call__(self,  *xs):
         # pylint: disable=E1101
-        return torch.cat(*xs, dim=self.dim)
+        return torch.cat(xs, dim=self.dim)
         # pylint: enable=E1101
 
+class SplitBatchNorm(nn.BatchNorm2d):
+    def __init__(self, num_chunks, **kw):
+        super().__init__(**kw)
+        self.num_chunks = num_chunks
+        
+    def forward(self, x):
+        chunk_size = x.size(0)//self.num_chunks
+        return torch.cat([nn.BatchNorm2d.forward(self, xx) for xx in torch.split(x, chunk_size, dim=0)])
+
+def bn(num_chunks, **kw):
+    if num_chunks == 1:
+        return nn.BatchNorm2d(**kw)  
+    else:
+        return SplitBatchNorm(num_chunks, **kw)
+        
 def convert_to_torch(layer):
     x_ent = lambda weight, reduction: nn.CrossEntropyLoss(weight, 
             size_average=(reduction != 'sum'), reduce=(reduction != 'none'))
     type_map = {
         utils.Conv2d: nn.Conv2d,
         utils.Linear: nn.Linear,
-        utils.BatchNorm2d: nn.BatchNorm2d,
+        utils.BatchNorm2d: bn,
         utils.MaxPool2d: nn.MaxPool2d,
         utils.CrossEntropyLoss: x_ent,
         utils.ReLU: nn.ReLU,
@@ -82,6 +97,7 @@ def convert_to_torch(layer):
     if type(layer) in type_map:
         return type_map[type(layer)](**asdict(layer))
     return layer
+
 
 
 class Network(nn.Module):  
@@ -100,7 +116,7 @@ class Network(nn.Module):
     
     def half(self):
         for module in self.children():
-            if type(module) is not nn.BatchNorm2d:
+            if not isinstance(module, nn.BatchNorm2d):
                 module.half()    
         return self
 

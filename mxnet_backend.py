@@ -49,9 +49,26 @@ def from_numpy(x, ctx=device):
 def remap_args(func, args_map): 
     return lambda **kw: func(**{args_map.get(k, k): v for (k,v) in kw.items()})
 
-def convert_to_mxnet(layer):
-    bn = lambda momentum, eps, affine, num_features, **kw: nn.BatchNorm(
+class SplitBatchNorm(nn.BatchNorm):
+    def __init__(self, num_chunks, **kwargs):
+        nn.BatchNorm.__init__(self, **kwargs)
+        self.num_chunks = num_chunks
+        
+    def hybrid_forward(self, F, x, gamma, beta, running_mean, running_var):
+        ys = [F.BatchNorm(xx, gamma, beta, running_mean, running_var,
+                           name='fwd', **self._kwargs) for xx in F.split(x, self.num_chunks, axis=0)]
+        return F.concat(*ys, dim=0)  
+
+
+def bn(momentum, eps, affine, num_features, num_chunks, **kw):
+    if num_chunks > 1:
+        return SplitBatchNorm(momentum=1-momentum, epsilon=eps, center=affine, scale=affine, 
+                              in_channels=num_features, num_chunks=num_chunks)
+    else:
+        return nn.BatchNorm(
         momentum=1-momentum, epsilon=eps, center=affine, scale=affine, in_channels=num_features)
+
+def convert_to_mxnet(layer):
     x_ent = lambda weight, reduction, **kw: gluon.loss.SoftmaxCrossEntropyLoss(
         weight=weight)
     type_map = {
@@ -70,6 +87,7 @@ def convert_to_mxnet(layer):
     if type(layer) in type_map:
         return type_map[type(layer)](**asdict(layer))
     return layer
+
 
 class Network(gluon.HybridBlock):  
     def __init__(self, net):
