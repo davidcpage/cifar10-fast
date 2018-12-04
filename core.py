@@ -1,14 +1,9 @@
 from inspect import signature
 from collections import namedtuple
 import time
-import torch
-from torch import nn
 import numpy as np
-import torchvision
 import pandas as pd
-
-torch.backends.cudnn.benchmark = True
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+from functools import singledispatch
 
 #####################
 # utils
@@ -21,25 +16,12 @@ class Timer():
 
     def __call__(self, include_in_total=True):
         self.times.append(time.time())
-        dt = self.times[-1] - self.times[-2]
+        delta_t = self.times[-1] - self.times[-2]
         if include_in_total:
-            self.total_time += dt
-        return dt
+            self.total_time += delta_t
+        return delta_t
     
 localtime = lambda: time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
-
-def warmup_cudnn(model, batch_size):
-    #run forward and backward pass of the model on a batch of random inputs
-    #to allow benchmarking of cudnn kernels 
-    batch = {
-        'input': torch.Tensor(np.random.rand(batch_size,3,32,32)).cuda().half(), 
-        'target': torch.LongTensor(np.random.randint(0,10,batch_size)).cuda()
-    }
-    model.train(True)
-    o = model(batch)
-    o['loss'].backward()
-    model.zero_grad()
-    torch.cuda.synchronize()
 
 class TableLogger():
     def append(self, output):
@@ -126,66 +108,6 @@ class Transform():
             x_shape = t.output_shape(x_shape) if hasattr(t, 'output_shape') else x_shape
             self.choices.append({k:np.random.choice(v, size=N) for (k,v) in options.items()})
 
-#####################
-## data loading
-#####################
-
-class Batches():
-    def __init__(self, dataset, batch_size, shuffle, num_workers=0, drop_last=False):
-        self.dataset = dataset
-        self.dataloader = torch.utils.data.DataLoader(
-            dataset, batch_size=batch_size, num_workers=num_workers, pin_memory=True, shuffle=shuffle, drop_last=drop_last
-        )
-    
-    def __iter__(self):  
-        return ({'input': x.to(device).half(), 'target': y.to(device).long()} for (x,y) in self.dataloader)
-    
-    def __len__(self): 
-        return len(self.dataloader)
-
-
-#####################
-## torch stuff
-#####################
-
-class Identity(nn.Module):
-    def forward(self, x): return x
-    
-class Mul(nn.Module):
-    def __init__(self, weight):
-        super().__init__()
-        self.weight = weight
-    def __call__(self, x): 
-        return x*self.weight
-    
-class Flatten(nn.Module):
-    def forward(self, x): return x.view(x.size(0), x.size(1))
-
-class Add(nn.Module):
-    def forward(self, x, y): return x + y 
-    
-class Concat(nn.Module):
-    def forward(self, *xs): return torch.cat(xs, 1)
-    
-class Correct(nn.Module):
-    def forward(self, classifier, target):
-        return classifier.max(dim = 1)[1] == target
-
-def batch_norm(num_channels, bn_bias_init=None, bn_bias_freeze=False, bn_weight_init=None, bn_weight_freeze=False):
-    m = nn.BatchNorm2d(num_channels)
-    if bn_bias_init is not None:
-        m.bias.data.fill_(bn_bias_init)
-    if bn_bias_freeze:
-        m.bias.requires_grad = False
-    if bn_weight_init is not None:
-        m.weight.data.fill_(bn_weight_init)
-    if bn_weight_freeze:
-        m.weight.requires_grad = False
-        
-    return m
-
-def to_numpy(x):
-    return x.detach().cpu().numpy()  
 
 #####################
 ## dict utils
@@ -213,98 +135,68 @@ def build_graph(net):
     parts = lambda path, pfx: tuple(pfx) + path.parts if isinstance(path, RelativePath) else (path,) if isinstance(path, str) else path
     return {sep.join((*pfx, name)): (val, [sep.join(parts(x, pfx)) for x in inputs]) for (*pfx, name), (val, inputs) in zip(net.keys(), with_default_inputs(net.values()))}
     
-class TorchGraph(nn.Module):
-    def __init__(self, net):
-        self.graph = build_graph(net)
-        super().__init__()
-        for n, (v, _) in self.graph.items(): 
-            setattr(self, n, v)
-
-    def forward(self, inputs):
-        self.cache = dict(inputs)
-        for n, (_, i) in self.graph.items():
-            self.cache[n] = getattr(self, n)(*[self.cache[x] for x in i])
-        return self.cache
-    
-    def half(self):
-        for module in self.children():
-            if type(module) is not nn.BatchNorm2d:
-                module.half()    
-        return self
 
 #####################
 ## training utils
 #####################
 
+@singledispatch
+def cat(*xs):
+    raise NotImplementedError
+    
+@singledispatch
+def to_numpy(x):
+    raise NotImplementedError
+
+
 class PiecewiseLinear(namedtuple('PiecewiseLinear', ('knots', 'vals'))):
     def __call__(self, t):
         return np.interp([t], self.knots, self.vals)[0]
 
-trainable_params = lambda model:filter(lambda p: p.requires_grad, model.parameters())
+class StatsLogger():
+    def __init__(self, keys):
+        self._stats = {k:[] for k in keys}
 
-def nesterov(params, momentum, weight_decay=None):
-    return torch.optim.SGD(params, lr=0.0, momentum=momentum, weight_decay=weight_decay, nesterov=True)
-
-concat = lambda xs: np.array(xs) if xs[0].shape is () else np.concatenate(xs)
-
-def set_opt_params(optimizer, params):
-    for k, v in params.items():
-        optimizer.param_groups[0][k] = v
-    return optimizer
-
-def update(model, optimizer):
-    assert model.training
-    model.cache['loss'].backward()
-    optimizer.step()
-    model.zero_grad()
+    def append(self, output):
+        for k,v in self._stats.items():
+            v.append(output[k].detach())
     
-def collect(stats, output):
-    for k,v in stats.items():
-        v.append(to_numpy(output[k]))
+    def stats(self, key):
+        return cat(*self._stats[key])
+        
+    def mean(self, key):
+        return np.mean(to_numpy(self.stats(key)), dtype=np.float)
 
-def train_epoch(model, batches, optimizer, lrs, stats):
-    model.train(True)   
-    for lr, batch in zip(lrs, batches):
-        collect(stats, model(batch))
-        update(model, set_opt_params(optimizer, {'lr': lr}))
-    return stats
-
-def test_epoch(model, batches, stats):
-    model.train(False)
+def run_batches(model, batches, training, optimizer_step=None, stats=None):
+    stats = stats or StatsLogger(('loss', 'correct'))
+    model.train(training)   
     for batch in batches:
-        collect(stats, model(batch))
+        output = model(batch)
+        stats.append(output) 
+        if training:
+            output['loss'].sum().backward()
+            optimizer_step()
+            model.zero_grad() 
     return stats
+    
+def train_epoch(model, train_batches, test_batches, optimizer_step, timer, test_time_in_total=True):
+    train_stats, train_time = run_batches(model, train_batches, True, optimizer_step), timer()
+    test_stats, test_time = run_batches(model, test_batches, False), timer(test_time_in_total)
+    return { 
+        'train time': train_time, 'train loss': train_stats.mean('loss'), 'train acc': train_stats.mean('correct'), 
+        'test time': test_time, 'test loss': test_stats.mean('loss'), 'test acc': test_stats.mean('correct'),
+        'total time': timer.total_time, 
+    }
 
-sum_ = lambda xs: np.sum(concat(xs), dtype=np.float)
-
-def train(model, lr_schedule, optimizer, train_set, test_set, batch_size=512, 
-          loggers=(), test_time_in_total=True, num_workers=0, drop_last=False, timer=None):  
-    t = timer or Timer()
-    train_batches = Batches(train_set, batch_size, shuffle=True, num_workers=num_workers, drop_last=drop_last)
-    test_batches = Batches(test_set, batch_size, shuffle=False, num_workers=num_workers)
-    N_train, N_test = len(train_set), len(test_set)
-    if drop_last: N_train -= (N_train % batch_size)
-
-    for epoch in range(lr_schedule.knots[-1]):
-        train_batches.dataset.set_random_choices() 
-        lrs = (lr_schedule(x)/batch_size for x in np.arange(epoch, epoch+1, 1/len(train_batches)))
-        train_stats, train_time = train_epoch(model, train_batches, optimizer, lrs, {'loss': [], 'correct': []}), t()
-        test_stats, test_time = test_epoch(model, test_batches, {'loss': [], 'correct': []}), t(test_time_in_total)
-        summary = {
-           'epoch': epoch+1, 
-           'lr': lr_schedule(epoch+1), 
-           'train time': train_time, 
-           'train loss': sum_(train_stats['loss'])/N_train, 
-           'train acc': sum_(train_stats['correct'])/N_train, 
-           'test time': test_time, 
-           'test loss': sum_(test_stats['loss'])/N_test, 
-           'test acc': sum_(test_stats['correct'])/N_test,
-           'total time': t.total_time, 
-        }
+def train(model, optimizer, train_batches, test_batches, epochs, 
+          loggers=(), test_time_in_total=True, timer=None):  
+    timer = timer or Timer()
+    for epoch in range(epochs):
+        epoch_stats = train_epoch(model, train_batches, test_batches, optimizer.step, timer, test_time_in_total=test_time_in_total) 
+        summary = union({'epoch': epoch+1, 'lr': optimizer.param_values()['lr']*train_batches.batch_size}, epoch_stats)
         for logger in loggers:
             logger.append(summary)    
     return summary
-
 
 #####################
 ## network visualisation (requires pydot)
@@ -370,8 +262,8 @@ class DotGraph():
 
 walk = lambda dict_, key: walk(dict_, dict_[key]) if key in dict_ else key
    
-def remove_identity_nodes(net):  
+def remove_by_type(net, node_type):  
     #remove identity nodes for more compact visualisations
     graph = build_graph(net)
-    remap = {k: i[0] for k,(v,i) in graph.items() if isinstance(v, Identity)}
-    return {k: (v, [walk(remap, x) for x in i]) for k, (v,i) in graph.items() if not isinstance(v, Identity)}
+    remap = {k: i[0] for k,(v,i) in graph.items() if isinstance(v, node_type)}
+    return {k: (v, [walk(remap, x) for x in i]) for k, (v,i) in graph.items() if not isinstance(v, node_type)}

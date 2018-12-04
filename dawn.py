@@ -1,4 +1,5 @@
-from utils import *
+from core import *
+from torch_backend import *
 
 #Network definition
 def conv_bn(c_in, c_out, bn_weight_init=1.0, **kw):
@@ -22,12 +23,10 @@ def basic_net(channels, weight,  pool, **kw):
         'layer1': dict(conv_bn(channels['prep'], channels['layer1'], **kw), pool=pool),
         'layer2': dict(conv_bn(channels['layer1'], channels['layer2'], **kw), pool=pool),
         'layer3': dict(conv_bn(channels['layer2'], channels['layer3'], **kw), pool=pool),
-        'classifier': {
-            'pool': nn.MaxPool2d(4),
-            'flatten': Flatten(),
-            'linear': nn.Linear(channels['layer3'], 10, bias=False),
-            'logits': Mul(weight),
-        }
+        'pool': nn.MaxPool2d(4),
+        'flatten': Flatten(),
+        'linear': nn.Linear(channels['layer3'], 10, bias=False),
+        'classifier': Mul(weight),
     }
 
 def net(channels=None, weight=0.125, pool=nn.MaxPool2d(2), extra_layers=(), res_layers=('layer1', 'layer3'), **kw):
@@ -40,8 +39,8 @@ def net(channels=None, weight=0.125, pool=nn.MaxPool2d(2), extra_layers=(), res_
     return n
 
 losses = {
-    'loss':  (nn.CrossEntropyLoss(size_average=False), [('classifier','logits'), ('target',)]),
-    'correct': (Correct(), [('classifier','logits'), ('target',)]),
+    'loss':  (nn.CrossEntropyLoss(reduce=False), [('classifier',), ('target',)]),
+    'correct': (Correct(), [('classifier',), ('target',)]),
 }
 
 class TSVLogger():
@@ -57,35 +56,39 @@ def main():
     DATA_DIR = './data'
 
     print('Downloading datasets')
-    train_set_raw = torchvision.datasets.CIFAR10(root=DATA_DIR, train=True, download=True)
-    test_set_raw = torchvision.datasets.CIFAR10(root=DATA_DIR, train=False, download=True)
+    dataset = cifar10(DATA_DIR)
 
-    lr_schedule = PiecewiseLinear([0, 5, 24], [0, 0.4, 0])
+    epochs = 24
+    lr_schedule = PiecewiseLinear([0, 5, epochs], [0, 0.4, 0])
     batch_size = 512
     train_transforms = [Crop(32, 32), FlipLR(), Cutout(8, 8)]
 
-    model = TorchGraph(union(net(), losses)).to(device).half()
-    opt = nesterov(trainable_params(model), momentum=0.9, weight_decay=5e-4*batch_size)
+    model = Network(union(net(), losses)).to(device).half()
     
     print('Warming up cudnn on random inputs')
-    for size in [batch_size, len(test_set_raw) % batch_size]:
+    for size in [batch_size, len(dataset['test']['labels']) % batch_size]:
         warmup_cudnn(model, size)
     
     print('Starting timer')
-    t = Timer()
+    timer = Timer()
     
     print('Preprocessing training data')
-    train_set = list(zip(transpose(normalise(pad(train_set_raw.train_data, 4))), train_set_raw.train_labels))
-    print(f'Finished in {t():.2} seconds')
+    train_set = list(zip(transpose(normalise(pad(dataset['train']['data'], 4))), dataset['train']['labels']))
+    print(f'Finished in {timer():.2} seconds')
     print('Preprocessing test data')
-    test_set = list(zip(transpose(normalise(test_set_raw.test_data)), test_set_raw.test_labels))
-    print(f'Finished in {t():.2} seconds')
+    test_set = list(zip(transpose(normalise(dataset['test']['data'])), dataset['test']['labels']))
+    print(f'Finished in {timer():.2} seconds')
     
     TSV = TSVLogger()
-    train(model, lr_schedule, opt, Transform(train_set, train_transforms), test_set, 
-          batch_size=batch_size, loggers=(TableLogger(), TSV), timer=t, test_time_in_total=False, drop_last=True)
+    
+    train_batches = Batches(Transform(train_set, train_transforms), batch_size, shuffle=True, set_random_choices=True, drop_last=True)
+    test_batches = Batches(test_set, batch_size, shuffle=False, drop_last=False)
+    lr = lambda step: lr_schedule(step/len(train_batches))/batch_size
+    opt = SGD(trainable_params(model), lr=lr, momentum=0.9, weight_decay=5e-4*batch_size, nesterov=True)
+   
+    train(model, opt, train_batches, test_batches, epochs, loggers=(TableLogger(), TSV), timer=timer, test_time_in_total=False)
     
     with open('logs.tsv', 'w') as f:
-        f.write(str(TSV))
-
+        f.write(str(TSV))        
+        
 main()
