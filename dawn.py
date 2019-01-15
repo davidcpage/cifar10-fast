@@ -50,7 +50,7 @@ class TSVLogger():
         epoch, hours, acc = output['epoch'], output['total time']/3600, output['test acc']*100
         self.log.append('{}\t{:.8f}\t{:.2f}'.format(epoch, hours, acc))
     def __str__(self):
-        return '\n'.join(self.log)
+        return '\n'.join(map(str, self.log))
    
 def main():
     DATA_DIR = './data'
