@@ -119,7 +119,7 @@ class Network(nn.Module):
     
     def half(self):
         for module in self.children():
-            if type(module) is not nn.BatchNorm2d:
+            if not isinstance(module, nn.BatchNorm2d):
                 module.half()    
         return self
 
