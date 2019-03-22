@@ -36,9 +36,14 @@ def warmup_cudnn(model, batch_size):
 def cifar10(root):
     train_set = torchvision.datasets.CIFAR10(root=root, train=True, download=True)
     test_set = torchvision.datasets.CIFAR10(root=root, train=False, download=True)
+    # Need to check for both naming conventions used in torchvision >=0.2.2
+    # (`data` and `targets`), and those from torchvision >=0.2.1 (train/test_set
+    # and train/test_labels)
     return {
-        'train': {'data': train_set.train_data, 'labels': train_set.train_labels},
-        'test': {'data': test_set.test_data, 'labels': test_set.test_labels}
+        'train': {'data': train_set.data if hasattr(train_set, 'data') else train_set.train_data,
+                  'labels': train_set.targets if hasattr(train_set, 'targets') else train_set.train_labels},
+        'test': {'data': test_set.data if hasattr(test_set, 'data') else test_set.test_data,
+                 'labels': test_set.targets if hasattr(test_set, 'targets') else test_set.test_labels},
     }
 
 #####################
