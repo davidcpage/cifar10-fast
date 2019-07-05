@@ -1,6 +1,12 @@
 from core import *
 from torch_backend import *
+import argparse
+import os.path
 
+parser = argparse.ArgumentParser()
+parser.add_argument('--data_dir', type=str, default='./data')
+parser.add_argument('--log_dir', type=str, default='.')
+     
 #Network definition
 def conv_bn(c_in, c_out, bn_weight_init=1.0, **kw):
     return {
@@ -39,7 +45,7 @@ def net(channels=None, weight=0.125, pool=nn.MaxPool2d(2), extra_layers=(), res_
     return n
 
 losses = {
-    'loss':  (nn.CrossEntropyLoss(reduce=False), [('classifier',), ('target',)]),
+    'loss':  (nn.CrossEntropyLoss(reduction='none'), [('classifier',), ('target',)]),
     'correct': (Correct(), [('classifier',), ('target',)]),
 }
 
@@ -53,10 +59,11 @@ class TSVLogger():
         return '\n'.join(self.log)
    
 def main():
-    DATA_DIR = './data'
 
+    args = parser.parse_args()
+    
     print('Downloading datasets')
-    dataset = cifar10(DATA_DIR)
+    dataset = cifar10(args.data_dir)
 
     epochs = 24
     lr_schedule = PiecewiseLinear([0, 5, epochs], [0, 0.4, 0])
@@ -88,7 +95,7 @@ def main():
    
     train(model, opt, train_batches, test_batches, epochs, loggers=(TableLogger(), TSV), timer=timer, test_time_in_total=False)
     
-    with open('logs.tsv', 'w') as f:
+    with open(os.path.join(os.path.expanduser(args.log_dir), 'logs.tsv'), 'w') as f:
         f.write(str(TSV))        
         
 main()
