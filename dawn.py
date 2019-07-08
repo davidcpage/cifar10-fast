@@ -77,7 +77,7 @@ def main():
         warmup_cudnn(model, size)
     
     print('Starting timer')
-    timer = Timer()
+    timer = Timer(synch=torch.cuda.synchronize)
     
     print('Preprocessing training data')
     train_set = list(zip(transpose(normalise(pad(dataset['train']['data'], 4))), dataset['train']['labels']))

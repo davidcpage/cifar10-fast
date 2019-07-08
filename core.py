@@ -10,11 +10,14 @@ from functools import singledispatch
 #####################
 
 class Timer():
-    def __init__(self):
+    def __init__(self, synch=None):
+        self.synch = synch or (lambda: None)
+        self.synch()
         self.times = [time.time()]
         self.total_time = 0.0
 
     def __call__(self, include_in_total=True):
+        self.synch()
         self.times.append(time.time())
         delta_t = self.times[-1] - self.times[-2]
         if include_in_total:
