@@ -54,9 +54,9 @@ class TSVLogger():
         self.log = ['epoch\thours\ttop1Accuracy']
     def append(self, output):
         epoch, hours, acc = output['epoch'], output['total time']/3600, output['test acc']*100
-        self.log.append(f'{epoch}\t{hours:.8f}\t{acc:.2f}')
+        self.log.append('{}\t{:.8f}\t{:.2f}'.format(epoch, hours, acc))
     def __str__(self):
-        return '\n'.join(self.log)
+        return '\n'.join(map(str, self.log))
    
 def main():
 
@@ -81,10 +81,10 @@ def main():
     
     print('Preprocessing training data')
     train_set = list(zip(transpose(normalise(pad(dataset['train']['data'], 4))), dataset['train']['labels']))
-    print(f'Finished in {timer():.2} seconds')
+    print('Finished in {:.2} seconds'.format(timer()))
     print('Preprocessing test data')
     test_set = list(zip(transpose(normalise(dataset['test']['data'])), dataset['test']['labels']))
-    print(f'Finished in {timer():.2} seconds')
+    print('Finished in {:.2} seconds'.format(timer())
     
     TSV = TSVLogger()
     

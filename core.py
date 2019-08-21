@@ -30,9 +30,9 @@ class TableLogger():
     def append(self, output):
         if not hasattr(self, 'keys'):
             self.keys = output.keys()
-            print(*(f'{k:>12s}' for k in self.keys))
+            print(*('{:>12s}'.format(k) for k in self.keys))
         filtered = [output[k] for k in self.keys]
-        print(*(f'{v:12.4f}' if isinstance(v, np.float) else f'{v:12}' for v in filtered))
+        print(*('{:12.4f}'.format(v) if isinstance(v, np.float) else '{:12}'.format(v) for v in filtered))
 
 #####################
 ## data preprocessing
@@ -136,7 +136,7 @@ def build_graph(net):
     default_inputs = [[('input',)]]+[[k] for k in net.keys()]
     with_default_inputs = lambda vals: (val if isinstance(val, tuple) else (val, default_inputs[idx]) for idx,val in enumerate(vals))
     parts = lambda path, pfx: tuple(pfx) + path.parts if isinstance(path, RelativePath) else (path,) if isinstance(path, str) else path
-    return {sep.join((*pfx, name)): (val, [sep.join(parts(x, pfx)) for x in inputs]) for (*pfx, name), (val, inputs) in zip(net.keys(), with_default_inputs(net.values()))}
+    return {sep.join(map(str, (*pfx, name))): (val, [sep.join(map(str, parts(x, pfx))) for x in inputs]) for (*pfx, name), (val, inputs) in zip(net.keys(), with_default_inputs(net.values()))}
     
 
 #####################
@@ -219,7 +219,7 @@ def make_pydot(nodes, edges, direction='LR', sep=sep, **kwargs):
     stub = lambda path: path[-1]
     class Subgraphs(dict):
         def __missing__(self, path):
-            subgraph = pydot.Cluster(sep.join(path), label=stub(path), style='rounded, filled', fillcolor='#77777744')
+            subgraph = pydot.Cluster(sep.join(map(str, path)), label=stub(path), style='rounded, filled', fillcolor='#77777744')
             self[parent(path)].add_subgraph(subgraph)
             return subgraph
     subgraphs = Subgraphs()
