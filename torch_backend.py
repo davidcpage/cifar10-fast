@@ -173,7 +173,7 @@ class LogSoftmax(namedtuple('LogSoftmax', ['dim'])):
         return torch.nn.functional.log_softmax(x, self.dim, _stacklevel=5)
 
 x_ent_loss = Network({
-  'loss':  (nn.CrossEntropyLoss(reduction=none), ['logits', 'target']),
+  'loss':  (nn.CrossEntropyLoss(reduction='none'), ['logits', 'target']),
   'acc': (Correct(), ['logits', 'target'])
 })
 
