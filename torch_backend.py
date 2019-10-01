@@ -306,7 +306,9 @@ def update_ema(momentum, update_freq=1):
 default_train_steps = (forward(training_mode=True), log_activations(('loss', 'acc')), backward(), opt_steps)
 default_valid_steps = (forward(training_mode=False), log_activations(('loss', 'acc')))
 
-def train_epoch(state, timer, train_batches, valid_batches, train_steps=default_train_steps, valid_steps=default_valid_steps, on_epoch_end=identity):
+
+def train_epoch(state, timer, train_batches, valid_batches, train_steps=default_train_steps, valid_steps=default_valid_steps, 
+                on_epoch_end=(lambda state: state)):
     train_summary, train_time = epoch_stats(on_epoch_end(reduce(train_batches, state, train_steps))), timer()
     valid_summary, valid_time = epoch_stats(reduce(valid_batches, state, valid_steps)), timer(include_in_total=False) #DAWNBench rules
     return {
