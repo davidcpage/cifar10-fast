@@ -13,12 +13,12 @@ class Timer():
     def __init__(self, synch=None):
         self.synch = synch or (lambda: None)
         self.synch()
-        self.times = [time.time()]
+        self.times = [time.perf_counter()]
         self.total_time = 0.0
 
     def __call__(self, include_in_total=True):
         self.synch()
-        self.times.append(time.time())
+        self.times.append(time.perf_counter())
         delta_t = self.times[-1] - self.times[-2]
         if include_in_total:
             self.total_time += delta_t
@@ -26,31 +26,55 @@ class Timer():
     
 localtime = lambda: time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
 
-class TableLogger():
-    def append(self, output):
-        if not hasattr(self, 'keys'):
-            self.keys = output.keys()
-            print(*(f'{k:>12s}' for k in self.keys))
-        filtered = [output[k] for k in self.keys]
-        print(*(f'{v:12.4f}' if isinstance(v, np.float) else f'{v:12}' for v in filtered))
+default_table_formats = {float: '{:{w}.4f}', str: '{:>{w}s}', 'default': '{:{w}}', 'title': '{:>{w}s}'}
+
+def table_formatter(val, is_title=False, col_width=12, formats=None):
+    formats = formats or default_table_formats
+    type_ = lambda val: float if isinstance(val, (float, np.float)) else type(val)
+    return (formats['title'] if is_title else formats.get(type_(val), formats['default'])).format(val, w=col_width)
+
+def every(n, col): 
+    return lambda data: data[col] % n == 0
+
+class Table():
+    def __init__(self, keys=None, report=(lambda data: True), formatter=table_formatter):
+        self.keys, self.report, self.formatter = keys, report, formatter
+        self.log = []
+        
+    def append(self, data):
+        self.log.append(data)
+        data = {' '.join(p): v for p,v in path_iter(data)}
+        self.keys = self.keys or data.keys()
+        if len(self.log) is 1:
+            print(*(self.formatter(k, True) for k in self.keys))
+        if self.report(data):
+            print(*(self.formatter(data[k]) for k in self.keys))
+            
+    def df(self):
+        return pd.DataFrame([{'_'.join(p): v for p,v in path_iter(row)} for row in self.log])     
+
 
 #####################
 ## data preprocessing
 #####################
 
-cifar10_mean = (0.4914, 0.4822, 0.4465) # equals np.mean(train_set.train_data, axis=(0,1,2))/255
-cifar10_std = (0.2471, 0.2435, 0.2616) # equals np.std(train_set.train_data, axis=(0,1,2))/255
+normalise = lambda x, mean, std: (x - mean)/std
+unnormalise = lambda x, mean, std: x*std + mean
 
-def normalise(x, mean=cifar10_mean, std=cifar10_std):
-    x, mean, std = [np.array(a, np.float32) for a in (x, mean, std)]
-    x -= mean*255
-    x *= 1.0/(255*std)
-    return x
+@singledispatch
+def pad(x, border):
+    raise NotImplementedError
 
-def pad(x, border=4):
+@pad.register(np.ndarray)
+def _(x, border): 
     return np.pad(x, [(0, 0), (border, border), (border, border), (0, 0)], mode='reflect')
 
-def transpose(x, source='NHWC', target='NCHW'):
+@singledispatch
+def transpose(x, source, target):
+    raise NotImplementedError
+
+@transpose.register(np.ndarray)
+def _(x, source, target):
     return x.transpose([source.index(d) for d in target]) 
 
 #####################
@@ -59,34 +83,41 @@ def transpose(x, source='NHWC', target='NCHW'):
 
 class Crop(namedtuple('Crop', ('h', 'w'))):
     def __call__(self, x, x0, y0):
-        return x[:,y0:y0+self.h,x0:x0+self.w]
+        return x[..., y0:y0+self.h, x0:x0+self.w]
 
-    def options(self, x_shape):
-        C, H, W = x_shape
-        return {'x0': range(W+1-self.w), 'y0': range(H+1-self.h)}
+    def options(self, shape):
+        *_, H, W = shape
+        return [{'x0': x0, 'y0': y0} for x0 in range(W+1-self.w) for y0 in range(H+1-self.h)]
     
-    def output_shape(self, x_shape):
-        C, H, W = x_shape
-        return (C, self.h, self.w)
-    
+    def output_shape(self, shape):
+        *_, H, W = shape
+        return (*_, self.h, self.w)
+
+@singledispatch
+def flip_lr(x):
+    raise NotImplementedError
+
+@flip_lr.register(np.ndarray)
+def _(x): 
+    return x[..., ::-1].copy()
+
 class FlipLR(namedtuple('FlipLR', ())):
-    def __call__(self, x, choice):
-        return x[:, :, ::-1].copy() if choice else x 
+    def apply(self, x, choice):
+        return flip_lr(x) if choice else x 
         
-    def options(self, x_shape):
-        return {'choice': [True, False]}
+    def options(self, shape):
+        return [{'choice': b} for b in [True, False]]
 
 class Cutout(namedtuple('Cutout', ('h', 'w'))):
-    def __call__(self, x, x0, y0):
-        x = x.copy()
-        x[:,y0:y0+self.h,x0:x0+self.w].fill(0.0)
+    def apply(self, x, x0, y0):
+        x[..., y0:y0+self.h, x0:x0+self.w] = 0.0
         return x
 
-    def options(self, x_shape):
-        C, H, W = x_shape
-        return {'x0': range(W+1-self.w), 'y0': range(H+1-self.h)} 
+    def options(self, shape):
+        *_, H, W = shape
+        return [{'x0': x0, 'y0': y0} for x0 in range(W+1-self.w) for y0 in range(H+1-self.h)]    
     
-    
+
 class Transform():
     def __init__(self, dataset, transforms):
         self.dataset, self.transforms = dataset, transforms
@@ -107,9 +138,8 @@ class Transform():
         x_shape = self.dataset[0][0].shape
         N = len(self)
         for t in self.transforms:
-            options = t.options(x_shape)
+            self.choices.append(np.random.choice(t.options(x_shape), N))
             x_shape = t.output_shape(x_shape) if hasattr(t, 'output_shape') else x_shape
-            self.choices.append({k:np.random.choice(v, size=N) for (k,v) in options.items()})
 
 
 #####################
@@ -123,21 +153,37 @@ def path_iter(nested_dict, pfx=()):
         if isinstance(val, dict): yield from path_iter(val, (*pfx, name))
         else: yield ((*pfx, name), val)  
 
+def map_nested(func, nested_dict):
+    return {k: map_nested(func, v) if isinstance(v, dict) else func(v) for k,v in nested_dict.items()}
+
+def group_by_key(items):
+    res = defaultdict(list)
+    for k, v in items: 
+        res[k].append(v) 
+    return res
+
 #####################
 ## graph building
 #####################
 
-sep='_'
-RelativePath = namedtuple('RelativePath', ('parts'))
-rel_path = lambda *parts: RelativePath(parts)
+def join(path, *paths, sep='/', dotdot='..'):
+    #similar to os.path.normpath(os.path.join(path, *paths))
+    #in particular '..' takes you up a level
+    #a path starting with '/' is absolute (takes you to the top level)
+    parts = [path]
+    for p in paths:
+        if p == dotdot: parts.pop()
+        elif p.startswith(sep): parts = [p]
+        else: parts.append(p)
+    return sep.join(parts)
 
-def build_graph(net):
-    net = dict(path_iter(net)) 
-    default_inputs = [[('input',)]]+[[k] for k in net.keys()]
-    with_default_inputs = lambda vals: (val if isinstance(val, tuple) else (val, default_inputs[idx]) for idx,val in enumerate(vals))
-    parts = lambda path, pfx: tuple(pfx) + path.parts if isinstance(path, RelativePath) else (path,) if isinstance(path, str) else path
-    return {sep.join((*pfx, name)): (val, [sep.join(parts(x, pfx)) for x in inputs]) for (*pfx, name), (val, inputs) in zip(net.keys(), with_default_inputs(net.values()))}
-    
+def build_graph(net):  
+    flattened = [(join(*path), path[:-1], val, inputs) for (path, (val, inputs)) in path_iter(graph)]
+    resolve_input = lambda rel_path, parent, idx: join(*parent, rel_path) if isinstance(rel_path, str) else flattened[idx+rel_path][0]
+    return {path: (val, [resolve_input(rel_path, parent, idx) for rel_path in inputs]) for idx, (path, parent, val, inputs) in enumerate(flattened)}    
+
+def pipeline(net):
+    return map_nested((lambda node: node if type(node) is tuple else (node, [-1])), net)
 
 #####################
 ## training utils
@@ -151,55 +197,13 @@ def cat(*xs):
 def to_numpy(x):
     raise NotImplementedError
 
-
 class PiecewiseLinear(namedtuple('PiecewiseLinear', ('knots', 'vals'))):
     def __call__(self, t):
         return np.interp([t], self.knots, self.vals)[0]
-
-class StatsLogger():
-    def __init__(self, keys):
-        self._stats = {k:[] for k in keys}
-
-    def append(self, output):
-        for k,v in self._stats.items():
-            v.append(output[k].detach())
-    
-    def stats(self, key):
-        return cat(*self._stats[key])
-        
-    def mean(self, key):
-        return np.mean(to_numpy(self.stats(key)), dtype=np.float)
-
-def run_batches(model, batches, training, optimizer_step=None, stats=None):
-    stats = stats or StatsLogger(('loss', 'correct'))
-    model.train(training)   
-    for batch in batches:
-        output = model(batch)
-        stats.append(output) 
-        if training:
-            output['loss'].sum().backward()
-            optimizer_step()
-            model.zero_grad() 
-    return stats
-    
-def train_epoch(model, train_batches, test_batches, optimizer_step, timer, test_time_in_total=True):
-    train_stats, train_time = run_batches(model, train_batches, True, optimizer_step), timer()
-    test_stats, test_time = run_batches(model, test_batches, False), timer(test_time_in_total)
-    return { 
-        'train time': train_time, 'train loss': train_stats.mean('loss'), 'train acc': train_stats.mean('correct'), 
-        'test time': test_time, 'test loss': test_stats.mean('loss'), 'test acc': test_stats.mean('correct'),
-        'total time': timer.total_time, 
-    }
-
-def train(model, optimizer, train_batches, test_batches, epochs, 
-          loggers=(), test_time_in_total=True, timer=None):  
-    timer = timer or Timer()
-    for epoch in range(epochs):
-        epoch_stats = train_epoch(model, train_batches, test_batches, optimizer.step, timer, test_time_in_total=test_time_in_total) 
-        summary = union({'epoch': epoch+1, 'lr': optimizer.param_values()['lr']*train_batches.batch_size}, epoch_stats)
-        for logger in loggers:
-            logger.append(summary)    
-    return summary
+ 
+class Const(namedtuple('Const', ['val'])):
+    def __call__(self, x):
+        return self.val
 
 #####################
 ## network visualisation (requires pydot)
@@ -213,57 +217,48 @@ class ColorMap(dict):
         self[key] = self.palette[len(self) % len(self.palette)]
         return self[key]
 
-def make_pydot(nodes, edges, direction='LR', sep=sep, **kwargs):
-    import pydot
-    parent = lambda path: path[:-1]
-    stub = lambda path: path[-1]
+def split(path, sep='/'):
+    i = path.rfind(sep) + 1
+    return p[:i], p[i:]
+
+def make_dot_graph(nodes, edges, direction='LR', sep='/', **kwargs):
+    from pydot import Dot, Cluster, Node, Edge
     class Subgraphs(dict):
         def __missing__(self, path):
-            subgraph = pydot.Cluster(sep.join(path), label=stub(path), style='rounded, filled', fillcolor='#77777744')
-            self[parent(path)].add_subgraph(subgraph)
+            parent, label = split(path, sep)
+            subgraph = Cluster(path, label=label, style='rounded, filled', fillcolor='#77777744')
+            self[parent].add_subgraph(subgraph)
             return subgraph
-    subgraphs = Subgraphs()
-    subgraphs[()] = g = pydot.Dot(rankdir=direction, directed=True, **kwargs)
+    g = Dot(rankdir=direction, directed=True, **kwargs)
     g.set_node_defaults(
         shape='box', style='rounded, filled', fillcolor='#ffffff')
-    for node, attr in nodes:
-        path = tuple(node.split(sep))
-        subgraphs[parent(path)].add_node(
-            pydot.Node(name=node, label=stub(path), **attr))
+    subgraphs = Subgraphs({'': g})
+    for path, attr in nodes:
+        parent, label = split(path, sep)
+        subgraphs[parent].add_node(
+            Node(name=path, label=label, **attr))
     for src, dst, attr in edges:
-        g.add_edge(pydot.Edge(src, dst, **attr))
+        g.add_edge(Edge(src, dst, **attr))
     return g
 
-get_params = lambda mod: {p.name: getattr(mod, p.name, '?') for p in signature(type(mod)).parameters.values()}
-
-
 class DotGraph():
-    colors = ColorMap()
-    def __init__(self, net, size=15, direction='LR'):
-        graph = build_graph(net)
-        self.nodes = [(k, {
-            'tooltip': '%s %.1000r' % (type(n).__name__, get_params(n)), 
-            'fillcolor': '#'+self.colors[type(n)],
-        }) for k, (n, i) in graph.items()] 
-        self.edges = [(src, k, {}) for (k, (n, i)) in graph.items() for src in i]
-        self.size, self.direction = size, direction
+    def __init__(self, graph, sep='/', size=15, direction='LR'):
+        self.nodes = [(k, v) for k, (v,_) in graph.items()]
+        self.edges = [(src, dst, {}) for dst, (_, inputs) in graph.items() for src in inputs]
+        self.sep, self.size, self.direction = sep, size, direction
 
     def dot_graph(self, **kwargs):
-        return make_pydot(self.nodes, self.edges, size=self.size, 
-                            direction=self.direction, **kwargs)
+        return make_dot_graph(self.nodes, self.edges, sep=self.sep, size=self.size, direction=self.direction,  **kwargs)
 
     def svg(self, **kwargs):
         return self.dot_graph(**kwargs).create(format='svg').decode('utf-8')
-
     try:
         import pydot
-        def _repr_svg_(self):
-            return self.svg()
+        _repr_svg_ = svg
     except ImportError:
-        def __repr__(self):
-            return 'pydot is needed for network visualisation'
+        def __repr__(self): return 'pydot is needed for network visualisation'
 
-walk = lambda dict_, key: walk(dict_, dict_[key]) if key in dict_ else key
+walk = lambda dct, key: walk(dct, dct[key]) if key in dct else key
    
 def remove_by_type(net, node_type):  
     #remove identity nodes for more compact visualisations
