@@ -224,6 +224,7 @@ SGD = partial(optimiser, update=nesterov_update, state_init=zeros_like)
 #####################
 ## training
 #####################
+from itertools import chain
 
 def reduce(batches, state, steps):
     #state: is a dictionary
