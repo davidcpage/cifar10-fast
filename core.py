@@ -128,6 +128,7 @@ class Transform():
            
     def __getitem__(self, index):
         data, labels = self.dataset[index]
+        data = data.copy()
         for choices, f in zip(self.choices, self.transforms):
             data = f(data, **choices[index])
         return data, labels
