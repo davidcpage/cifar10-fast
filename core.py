@@ -177,7 +177,7 @@ def normpath(path):
     return sep.join(parts)
 
 def build_graph(net):  
-    flattened = [(join(*path), path[:-1], val, inputs) for (path, (val, inputs)) in path_iter(net)]
+    flattened = [(sep.join(path), path[:-1], val, inputs) for (path, (val, inputs)) in path_iter(net)]
     resolve_input = lambda rel_path, parent, idx: normpath(sep.join(*parent, rel_path)) if isinstance(rel_path, str) else flattened[idx+rel_path][0]
     return {path: (val, [resolve_input(rel_path, parent, idx) for rel_path in inputs]) for idx, (path, parent, val, inputs) in enumerate(flattened)}    
 
