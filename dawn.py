@@ -93,7 +93,7 @@ def main():
     test_batches = Batches(test_set, batch_size, shuffle=False, drop_last=False)
     lr = lambda step: lr_schedule(step/len(train_batches))/batch_size
     opt_params = {'lr': lr, 'weight_decay': Const(5e-4*batch_size), 'momentum': Const(0.9)}
-    logs, state, timer = (Table(), TSV), {MODEL: model, LOSS: loss, OPTS: [SGD(trainable_params(model).values(), opt_params)]}, Timer(torch.cuda.synchronize)
+    logs, state = (Table(), TSV), {MODEL: model, LOSS: loss, OPTS: [SGD(trainable_params(model).values(), opt_params)]}
     for epoch in range(epochs):
         summary = union({'epoch': epoch+1}, train_epoch(state, timer, train_batches, test_batches))
         for l in logs: l.append(summary)

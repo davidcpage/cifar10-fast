@@ -255,7 +255,6 @@ def forward(training_mode):
         model = state[MODEL] if training_mode or (VALID_MODEL not in state) else state[VALID_MODEL]
         if model.training != training_mode: #without the guard it's slow!
             model.train(training_mode)
-        output = model(batch)
         return {OUTPUT: state[LOSS](model(batch))}
     return step
 
