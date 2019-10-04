@@ -165,21 +165,20 @@ def group_by_key(items):
 #####################
 ## graph building
 #####################
+sep = '/'
 
-def join(path, *paths, sep='/', dotdot='..'):
-    #similar to os.path.normpath(os.path.join(path, *paths))
-    #in particular '..' takes you up a level
-    #a path starting with '/' is absolute (takes you to the top level)
-    parts = [path]
-    for p in paths:
-        if p == dotdot: parts.pop()
+def normpath(path):
+    #simplified os.path.normpath
+    parts = []
+    for p in path.split(sep):
+        if p == '..': parts.pop()
         elif p.startswith(sep): parts = [p]
         else: parts.append(p)
     return sep.join(parts)
 
 def build_graph(net):  
     flattened = [(join(*path), path[:-1], val, inputs) for (path, (val, inputs)) in path_iter(net)]
-    resolve_input = lambda rel_path, parent, idx: join(*parent, rel_path) if isinstance(rel_path, str) else flattened[idx+rel_path][0]
+    resolve_input = lambda rel_path, parent, idx: normpath(sep.join(*parent, rel_path)) if isinstance(rel_path, str) else flattened[idx+rel_path][0]
     return {path: (val, [resolve_input(rel_path, parent, idx) for rel_path in inputs]) for idx, (path, parent, val, inputs) in enumerate(flattened)}    
 
 def pipeline(net):
@@ -219,7 +218,7 @@ class ColorMap(dict):
 
 def split(path, sep='/'):
     i = path.rfind(sep) + 1
-    return p[:i], p[i:]
+    return path[:i], path[i:]
 
 def make_dot_graph(nodes, edges, direction='LR', sep='/', **kwargs):
     from pydot import Dot, Cluster, Node, Edge
