@@ -1,5 +1,5 @@
 from inspect import signature
-from collections import namedtuple
+from collections import namedtuple, defaultdict
 import time
 import numpy as np
 import pandas as pd
@@ -102,14 +102,14 @@ def _(x):
     return x[..., ::-1].copy()
 
 class FlipLR(namedtuple('FlipLR', ())):
-    def apply(self, x, choice):
+    def __call__(self, x, choice):
         return flip_lr(x) if choice else x 
         
     def options(self, shape):
         return [{'choice': b} for b in [True, False]]
 
 class Cutout(namedtuple('Cutout', ('h', 'w'))):
-    def apply(self, x, x0, y0):
+    def __call__(self, x, x0, y0):
         x[..., y0:y0+self.h, x0:x0+self.w] = 0.0
         return x
 
@@ -129,8 +129,7 @@ class Transform():
     def __getitem__(self, index):
         data, labels = self.dataset[index]
         for choices, f in zip(self.choices, self.transforms):
-            args = {k: v[index] for (k,v) in choices.items()}
-            data = f(data, **args)
+            data = f(data, **choices[index])
         return data, labels
     
     def set_random_choices(self):
@@ -167,6 +166,10 @@ def group_by_key(items):
 #####################
 sep = '/'
 
+def split(path):
+    i = path.rfind(sep) + 1
+    return path[:i].rstrip(sep), path[i:]
+
 def normpath(path):
     #simplified os.path.normpath
     parts = []
@@ -176,13 +179,16 @@ def normpath(path):
         else: parts.append(p)
     return sep.join(parts)
 
-def build_graph(net):  
-    flattened = [(sep.join(path), path[:-1], val, inputs) for (path, (val, inputs)) in path_iter(net)]
-    resolve_input = lambda rel_path, parent, idx: normpath(sep.join(*parent, rel_path)) if isinstance(rel_path, str) else flattened[idx+rel_path][0]
-    return {path: (val, [resolve_input(rel_path, parent, idx) for rel_path in inputs]) for idx, (path, parent, val, inputs) in enumerate(flattened)}    
+is_leaf = lambda node: node is None
+has_inputs = lambda node: type(node) is tuple
 
 def pipeline(net):
-    return map_nested((lambda node: node if type(node) is tuple else (node, [-1])), net)
+    return [(sep.join(path), (node if has_inputs(node) or is_leaf(node) else (node, [-1]))) for (path, node) in path_iter(net)]
+
+def build_graph(net):
+    flattened = pipeline(net)
+    resolve_input = lambda rel_path, path, idx: normpath(sep.join((path, '..', rel_path))) if isinstance(rel_path, str) else flattened[idx+rel_path][0]
+    return {path: (node[0], [resolve_input(rel_path, path, idx) for rel_path in node[1]]) for idx, (path, node) in enumerate(flattened) if not is_leaf(node)}    
 
 #####################
 ## training utils
@@ -216,15 +222,11 @@ class ColorMap(dict):
         self[key] = self.palette[len(self) % len(self.palette)]
         return self[key]
 
-def split(path, sep='/'):
-    i = path.rfind(sep) + 1
-    return path[:i], path[i:]
-
-def make_dot_graph(nodes, edges, direction='LR', sep='/', **kwargs):
+def make_dot_graph(nodes, edges, direction='LR', **kwargs):
     from pydot import Dot, Cluster, Node, Edge
     class Subgraphs(dict):
         def __missing__(self, path):
-            parent, label = split(path, sep)
+            parent, label = split(path)
             subgraph = Cluster(path, label=label, style='rounded, filled', fillcolor='#77777744')
             self[parent].add_subgraph(subgraph)
             return subgraph
@@ -233,7 +235,7 @@ def make_dot_graph(nodes, edges, direction='LR', sep='/', **kwargs):
         shape='box', style='rounded, filled', fillcolor='#ffffff')
     subgraphs = Subgraphs({'': g})
     for path, attr in nodes:
-        parent, label = split(path, sep)
+        parent, label = split(path)
         subgraphs[parent].add_node(
             Node(name=path, label=label, **attr))
     for src, dst, attr in edges:
@@ -241,13 +243,13 @@ def make_dot_graph(nodes, edges, direction='LR', sep='/', **kwargs):
     return g
 
 class DotGraph():
-    def __init__(self, graph, sep='/', size=15, direction='LR'):
+    def __init__(self, graph, size=15, direction='LR'):
         self.nodes = [(k, v) for k, (v,_) in graph.items()]
         self.edges = [(src, dst, {}) for dst, (_, inputs) in graph.items() for src in inputs]
-        self.sep, self.size, self.direction = sep, size, direction
+        self.size, self.direction = size, direction
 
     def dot_graph(self, **kwargs):
-        return make_dot_graph(self.nodes, self.edges, sep=self.sep, size=self.size, direction=self.direction,  **kwargs)
+        return make_dot_graph(self.nodes, self.edges, size=self.size, direction=self.direction,  **kwargs)
 
     def svg(self, **kwargs):
         return self.dot_graph(**kwargs).create(format='svg').decode('utf-8')

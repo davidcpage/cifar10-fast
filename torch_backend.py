@@ -2,7 +2,7 @@ import numpy as np
 import torch
 from torch import nn
 import torchvision
-from core import build_graph, cat, to_numpy, pad, transpose, flip_lr
+from core import *
 from collections import namedtuple 
 
 torch.backends.cudnn.benchmark = True
@@ -41,8 +41,7 @@ from functools import lru_cache as cache
 @cache(None)
 def cifar10(root='./data'):
     download = lambda train: torchvision.datasets.CIFAR10(root=root, train=train, download=True)
-    return {k: {'data': torch.tensor(v.data), 'targets': torch.tensor(v.targets)} 
-            for k,v in [('train', download(train=True)), ('valid', download(train=False))]}
+    return {k: {'data': v.data, 'targets': v.targets} for k,v in [('train', download(train=True)), ('valid', download(train=False))]}
   
 cifar10_mean, cifar10_std = [
     (125.31, 122.95, 113.87), # equals np.mean(cifar10()['train']['data'], axis=(0,1,2)) 
@@ -78,10 +77,9 @@ class Batches():
 
 #Network
 class Network(nn.Module):
-    def __init__(self, net, loss=None):
+    def __init__(self, net):
         super().__init__()
         self.graph = build_graph(net)
-        self.loss = loss or (lambda x: x)
         for path, (val, _) in self.graph.items(): 
             setattr(self, path.replace('/', '_'), val)
     
@@ -243,6 +241,7 @@ def reduce(batches, state, steps):
   
 #define keys in the state dict as constants
 MODEL = 'model'
+LOSS = 'loss'
 VALID_MODEL = 'valid_model'
 OUTPUT = 'output'
 OPTS = 'optimisers'
@@ -256,7 +255,8 @@ def forward(training_mode):
         model = state[MODEL] if training_mode or (VALID_MODEL not in state) else state[VALID_MODEL]
         if model.training != training_mode: #without the guard it's slow!
             model.train(training_mode)
-        return {OUTPUT: model.loss(model(batch))}
+        output = model(batch)
+        return {OUTPUT: state[LOSS](model(batch))}
     return step
 
 def forward_tta(tta_transforms):
@@ -266,14 +266,14 @@ def forward_tta(tta_transforms):
         if model.training:
             model.train(False)
         logits = torch.mean(torch.stack([model({'input': transform(batch['input'].clone())})['logits'].detach() for transform in tta_transforms], dim=0), dim=0)
-        return {OUTPUT: model.loss(dict(batch, logits=logits))}
+        return {OUTPUT: state[LOSS](dict(batch, logits=logits))}
     return step
 
 def backward(dtype=torch.float16):
     def step(batch, state):
         state[MODEL].zero_grad()
         if not batch: return
-        state[OUTPUT]['loss'].to(dtype).sum().backward()
+        state[OUTPUT][LOSS].to(dtype).sum().backward()
     return step
 
 def opt_steps(batch, state):
@@ -329,8 +329,8 @@ def fine_tune_bn_stats(state, batches, model_key=VALID_MODEL):
     return state
 
 #misc
-def warmup_cudnn(model, batch):
+def warmup_cudnn(model, loss, batch):
     #run forward and backward pass of the model
     #to allow benchmarking of cudnn kernels 
-    reduce([batch], {MODEL: model}, [forward(True), backward()])
+    reduce([batch], {MODEL: model, LOSS: loss}, [forward(True), backward()])
     torch.cuda.synchronize()
