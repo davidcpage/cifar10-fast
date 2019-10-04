@@ -58,7 +58,18 @@ class Table():
 ## data preprocessing
 #####################
 
-normalise = lambda x, mean, std: (x - mean)/std
+@singledispatch
+def normalise(x, mean, std):
+    return (x - mean) * std
+
+@normalise.register(np.ndarray) 
+def _(x, mean, std): 
+    #faster inplace for numpy arrays
+    x = np.array(x, np.float32)
+    x -= mean
+    x *= 1.0/std
+    return x
+
 unnormalise = lambda x, mean, std: x*std + mean
 
 @singledispatch
