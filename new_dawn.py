@@ -34,12 +34,12 @@ def main():
     print('Downloading datasets')
     dataset = map_nested(torch.tensor, cifar10(args.data_dir))
 
-    epochs = 14
-    lr_schedule = PiecewiseLinear([0, epochs/5, epochs], [0, 1.0, 0])
+    epochs, ema_epochs = 10, 2
+    lr_schedule = PiecewiseLinear([0, epochs/5, epochs-ema_epochs], [0, 1.0, 0.1])
     batch_size = 512
-    train_transforms = [Crop(32, 32), FlipLR(), Cutout(5, 5)]
+    train_transforms = [Crop(32, 32), FlipLR()]
 
-    print('Warming up torch eigenvalue lib')
+    print('Warming up torch')
     random_data = torch.tensor(np.random.randn(1000,3,32,32).astype(np.float16), device=device)
     Λ, V = eigens(patches(random_data))
 
@@ -80,9 +80,12 @@ def main():
         SGD(is_bias[False], {'lr': (lambda step: lr_schedule(step/len(train_batches))/batch_size), 'weight_decay': Const(5e-4*batch_size), 'momentum': Const(0.9)}),
         SGD(is_bias[True], {'lr': (lambda step: lr_schedule(step/len(train_batches))*(16/batch_size)), 'weight_decay': Const(5e-4*batch_size/16), 'momentum': Const(0.9)})
     ]
-    logs, state = Table(), {MODEL: model, LOSS: loss, OPTS: opts}
+    logs, state = Table(), {MODEL: model, VALID_MODEL: copy.deepcopy(model), LOSS: loss, OPTS: opts}
+
     for epoch in range(epochs):
-        logs.append(union({'epoch': epoch+1}, train_epoch(state, timer, train_batches, valid_batches)))
+        logs.append(union({'epoch': epoch+1}, train_epoch(state, timer, train_batches, valid_batches,
+                                                          train_steps=(*default_train_steps, update_ema(momentum=0.99, update_freq=5)),
+                                                          valid_steps=(forward_tta([(lambda x: x), flip_lr]), log_activations(('loss', 'acc'))))))
 
     with open(os.path.join(os.path.expanduser(args.log_dir), 'logs.tsv'), 'w') as f:
         f.write(tsv(logs.log))        
