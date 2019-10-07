@@ -54,7 +54,7 @@ cifar10_classes= 'airplane, automobile, bird, cat, deer, dog, frog, horse, ship,
 ## data loading
 #####################
 
-class Batches():
+class DataLoader():
     def __init__(self, dataset, batch_size, shuffle, set_random_choices=False, num_workers=0, drop_last=False):
         self.dataset = dataset
         self.batch_size = batch_size
@@ -70,6 +70,43 @@ class Batches():
     
     def __len__(self): 
         return len(self.dataloader)
+
+#GPU dataloading
+chunks = lambda data, splits: (data[start:end] for (start, end) in zip(splits, splits[1:]))
+
+even_splits = lambda N, num_chunks: np.cumsum([0] + [(N//num_chunks)+1]*(N % num_chunks)  + [N//num_chunks]*(num_chunks - (N % num_chunks)))
+
+def shuffled(xs, inplace=False):
+    xs = xs if inplace else copy.copy(xs) 
+    np.random.shuffle(xs)
+    return xs
+
+def transformed(data, targets, transform, max_options=None, unshuffle=False):
+    i = torch.randperm(len(data), device=device)
+    data = data[i]
+    options = shuffled(transform.options(data.shape), inplace=True)[:max_options]
+    data = torch.cat([transform(x, **choice) for choice, x in zip(options, chunks(data, even_splits(len(data), len(options))))])
+    return (data[torch.argsort(i)], targets) if unshuffle else (data, targets[i])
+
+class GPUBatches():
+    def __init__(self, batch_size, transforms=(), dataset=None, shuffle=True, drop_last=False, max_options=None):
+        self.dataset, self.transforms, self.shuffle, self.max_options = dataset, transforms, shuffle, max_options
+        N = len(dataset['data'])
+        self.splits = list(range(0, N+1, batch_size))
+        if not drop_last and self.splits[-1] != N:
+            self.splits.append(N)
+     
+    def __iter__(self):
+        data, targets = self.dataset['data'], self.dataset['targets']
+        for transform in self.transforms:
+            data, targets = transformed(data, targets, transform, max_options=self.max_options, unshuffle=not self.shuffle)
+        if self.shuffle:
+            i = torch.randperm(len(data), device=device)
+            data, targets = data[i], targets[i]
+        return ({'input': x.clone(), 'target': y} for (x, y) in zip(chunks(data, self.splits), chunks(targets, self.splits)))
+    
+    def __len__(self): 
+        return len(self.splits) - 1
 
 #####################
 ## Layers
@@ -89,7 +126,9 @@ class Network(nn.Module):
     def forward(self, inputs):
         outputs = dict(inputs)
         for k, (node, ins) in self.graph.items():
-            outputs[k] = node(*[outputs[x] for x in ins])
+            #only compute nodes that are not supplied as inputs.
+            if k not in outputs: 
+                outputs[k] = node(*[outputs[x] for x in ins])
         return outputs
     
     def half(self):
@@ -144,12 +183,12 @@ class GhostBatchNorm(BatchNorm):
     def forward(self, input):
         N, C, H, W = input.shape
         if self.training or not self.track_running_stats:
-            return F.batch_norm(
+            return nn.functional.batch_norm(
                 input.view(-1, C*self.num_splits, H, W), self.running_mean, self.running_var, 
                 self.weight.repeat(self.num_splits), self.bias.repeat(self.num_splits),
                 True, self.momentum, self.eps).view(N, C, H, W) 
         else:
-            return F.batch_norm(
+            return nn.functional.batch_norm(
                 input, self.running_mean[:self.num_features], self.running_var[:self.num_features], 
                 self.weight, self.bias, False, self.momentum, self.eps)
 
@@ -333,3 +372,28 @@ def warmup_cudnn(model, loss, batch):
     #to allow benchmarking of cudnn kernels 
     reduce([batch], {MODEL: model, LOSS: loss}, [forward(True), backward()])
     torch.cuda.synchronize()
+
+#####################
+## input whitening
+#####################
+
+def cov(X):
+    X = X/np.sqrt(X.size(0) - 1)
+    return X.t() @ X
+
+def patches(data, patch_size=(3, 3), dtype=torch.float32):
+    h, w = patch_size
+    c = data.size(1)
+    return data.unfold(2,h,1).unfold(3,w,1).transpose(1,3).reshape(-1, c, h, w).to(dtype)
+
+def eigens(patches):
+    n,c,h,w = patches.shape
+    Σ = cov(patches.reshape(n, c*h*w))
+    Λ, V = torch.symeig(Σ, eigenvectors=True)
+    return Λ.flip(0), V.t().reshape(c*h*w, c, h, w).flip(0)
+
+def whitening_filter(Λ, V, eps=1e-2):
+    filt = nn.Conv2d(3, 27, kernel_size=(3,3), padding=(1,1), bias=False)
+    filt.weight.data = (V/torch.sqrt(Λ+eps)[:,None,None,None])
+    filt.weight.requires_grad = False 
+    return filt

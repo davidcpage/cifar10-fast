@@ -1,4 +1,5 @@
 from inspect import signature
+import copy
 from collections import namedtuple, defaultdict
 import time
 import numpy as np
@@ -57,6 +58,11 @@ class Table():
 #####################
 ## data preprocessing
 #####################
+def preprocess(dataset, transforms):
+    dataset = copy.copy(dataset) #shallow copy
+    for transform in transforms:
+        dataset['data'] = transform(dataset['data'])
+    return dataset
 
 @singledispatch
 def normalise(x, mean, std):
@@ -191,16 +197,15 @@ def normpath(path):
         else: parts.append(p)
     return sep.join(parts)
 
-is_leaf = lambda node: node is None
 has_inputs = lambda node: type(node) is tuple
 
 def pipeline(net):
-    return [(sep.join(path), (node if has_inputs(node) or is_leaf(node) else (node, [-1]))) for (path, node) in path_iter(net)]
+    return [(sep.join(path), (node if has_inputs(node) else (node, [-1]))) for (path, node) in path_iter(net)]
 
 def build_graph(net):
     flattened = pipeline(net)
     resolve_input = lambda rel_path, path, idx: normpath(sep.join((path, '..', rel_path))) if isinstance(rel_path, str) else flattened[idx+rel_path][0]
-    return {path: (node[0], [resolve_input(rel_path, path, idx) for rel_path in node[1]]) for idx, (path, node) in enumerate(flattened) if not is_leaf(node)}    
+    return {path: (node[0], [resolve_input(rel_path, path, idx) for rel_path in node[1]]) for idx, (path, node) in enumerate(flattened)}    
 
 #####################
 ## training utils
@@ -226,10 +231,10 @@ class Const(namedtuple('Const', ['val'])):
 ## network visualisation (requires pydot)
 #####################
 class ColorMap(dict):
-    palette = (
+    palette = ['#'+x for x in (
         'bebada,ffffb3,fb8072,8dd3c7,80b1d3,fdb462,b3de69,fccde5,bc80bd,ccebc5,ffed6f,1f78b4,33a02c,e31a1c,ff7f00,'
         '4dddf8,e66493,b07b87,4e90e3,dea05e,d0c281,f0e189,e9e8b1,e0eb71,bbd2a4,6ed641,57eb9c,3ca4d4,92d5e7,b15928'
-    ).split(',')
+    ).split(',')]
     def __missing__(self, key):
         self[key] = self.palette[len(self) % len(self.palette)]
         return self[key]
