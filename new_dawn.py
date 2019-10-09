@@ -78,7 +78,7 @@ def main():
     is_bias = group_by_key(('bias' in k, v) for k, v in trainable_params(model).items())
     opts = [
         SGD(is_bias[False], {'lr': (lambda step: lr_schedule(step/len(train_batches))/batch_size), 'weight_decay': Const(5e-4*batch_size), 'momentum': Const(0.9)}),
-        SGD(is_bias[True], {'lr': (lambda step: lr_schedule(step/len(train_batches))*(16/batch_size)), 'weight_decay': Const(5e-4*batch_size/16), 'momentum': Const(0.9)})
+        SGD(is_bias[True], {'lr': (lambda step: lr_schedule(step/len(train_batches))*(64/batch_size)), 'weight_decay': Const(5e-4*batch_size/64), 'momentum': Const(0.9)})
     ]
     logs, state = Table(), {MODEL: model, VALID_MODEL: copy.deepcopy(model), LOSS: loss, OPTS: opts}
 
