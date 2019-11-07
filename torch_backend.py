@@ -316,11 +316,14 @@ def forward_tta(tta_transforms):
         return {OUTPUT: state[LOSS](dict(batch, logits=logits))}
     return step
 
-def backward(dtype=torch.float16):
+def backward(dtype=None):
     def step(batch, state):
         state[MODEL].zero_grad()
         if not batch: return
-        state[OUTPUT][LOSS].to(dtype).sum().backward()
+        loss = state[OUTPUT][LOSS]
+        if dtype is not None:
+            loss = loss.to(dtype)
+        loss.sum().backward()
     return step
 
 def opt_steps(batch, state):
