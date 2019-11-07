@@ -331,13 +331,14 @@ def opt_steps(batch, state):
     return {OPTS: [opt_step(**opt) for opt in state[OPTS]]}
 
 def log_activations(node_names=('loss', 'acc')):
-    logs = []
     def step(batch, state):
+        if '_tmp_logs_' not in state: 
+            state['_tmp_logs_'] = []
         if batch:
-            logs.extend((k, state[OUTPUT][k].detach()) for k in node_names)
+            state['_tmp_logs_'].extend((k, state[OUTPUT][k].detach()) for k in node_names)
         else:
-            res = {k: to_numpy(torch.cat(xs)).astype(np.float) for k, xs in group_by_key(logs).items()}
-            logs.clear()
+            res = {k: to_numpy(torch.cat(xs)).astype(np.float) for k, xs in group_by_key(state['_tmp_logs_']).items()}
+            del state['_tmp_logs_']
             return {ACT_LOG: res}
     return step
 
