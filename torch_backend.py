@@ -351,6 +351,7 @@ def update_ema(momentum, update_freq=1):
         if not batch: return
         if (next(n) % update_freq) != 0: return
         for v, ema_v in zip(state[MODEL].state_dict().values(), state[VALID_MODEL].state_dict().values()):
+            if not v.dtype.is_floating_point: continue #skip things like num_batches_tracked.
             ema_v *= rho
             ema_v += (1-rho)*v
     return step
