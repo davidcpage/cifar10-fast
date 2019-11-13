@@ -66,7 +66,7 @@ def preprocess(dataset, transforms):
 
 @singledispatch
 def normalise(x, mean, std):
-    return (x - mean) * std
+    return (x - mean) / std
 
 @normalise.register(np.ndarray) 
 def _(x, mean, std): 
