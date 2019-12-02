@@ -235,9 +235,23 @@ class ColorMap(dict):
         'bebada,ffffb3,fb8072,8dd3c7,80b1d3,fdb462,b3de69,fccde5,bc80bd,ccebc5,ffed6f,1f78b4,33a02c,e31a1c,ff7f00,'
         '4dddf8,e66493,b07b87,4e90e3,dea05e,d0c281,f0e189,e9e8b1,e0eb71,bbd2a4,6ed641,57eb9c,3ca4d4,92d5e7,b15928'
     ).split(',')]
+
     def __missing__(self, key):
         self[key] = self.palette[len(self) % len(self.palette)]
         return self[key]
+
+    def _repr_html_(self):
+        css = (
+        '.pill {'
+            'margin:2px; border-width:1px; border-radius:9px; border-style:solid;'
+            'display:inline-block; width:100px; height:15px; line-height:15px;'
+        '}'
+        '.pill_text {'
+            'width:90%; margin:auto; font-size:9px; text-align:center; overflow:hidden;'
+        '}'
+        )
+        s = '<div class=pill style="background-color:{}"><div class=pill_text>{}</div></div>'
+        return '<style>'+css+'</style>'+''.join((s.format(color, text) for text, color in self.items()))
 
 def make_dot_graph(nodes, edges, direction='LR', **kwargs):
     from pydot import Dot, Cluster, Node, Edge
