@@ -1,0 +1,14 @@
+
+# YAML 1.2
+---
+authors: 
+  -
+    family-names: Page
+    given-names: David  
+cff-version: "1.1.0"
+date-released: 2018-10-1
+message: "If you use this software, please cite it using these metadata."
+repository-code: "https://github.com/davidcpage/cifar10-fast"
+title: "CIFAR-10-Fast"
+version: "1.0"
+...
